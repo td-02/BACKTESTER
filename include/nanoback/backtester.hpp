@@ -1,0 +1,134 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <vector>
+
+namespace nanoback {
+
+enum class OrderType : std::int8_t {
+    market = 0,
+    limit = 1,
+};
+
+enum class SlippageModel : std::int8_t {
+    none = 0,
+    fixed_bps = 1,
+    volume_share = 2,
+};
+
+enum class AuditEventType : std::int8_t {
+    order_submitted = 0,
+    order_rejected_limit = 1,
+    order_rejected_leverage = 2,
+    order_rejected_cash = 3,
+    order_cancelled_session = 4,
+    fill_applied = 5,
+    risk_kill_switch = 6,
+    order_waiting_queue = 7,
+};
+
+struct BacktestConfig {
+    double starting_cash{1'000'000.0};
+    double commission_bps{0.0};
+    double slippage_bps{0.0};
+    double volume_share_impact{0.05};
+    double max_participation_rate{0.25};
+    double default_volume{1'000'000.0};
+    std::int64_t lot_size{1};
+    std::int64_t max_position{1};
+    std::int64_t latency_steps{0};
+    std::int64_t child_order_size{0};
+    double annual_borrow_bps{0.0};
+    double annual_cash_yield_bps{0.0};
+    double max_gross_leverage{10.0};
+    double max_drawdown_pct{1.0};
+    double queue_ahead_fraction{0.0};
+    double venue_volume_share_cap{1.0};
+    SlippageModel slippage_model{SlippageModel::volume_share};
+    bool allow_short{true};
+    bool mark_to_market{true};
+    bool cancel_orders_outside_session{true};
+    bool use_bid_ask_execution{false};
+};
+
+struct Fill {
+    std::int64_t timestamp{0};
+    std::int64_t order_id{0};
+    std::int64_t parent_order_id{0};
+    std::int64_t asset{0};
+    double price{0.0};
+    std::int64_t quantity{0};
+    std::int64_t remaining_quantity{0};
+    double fee{0.0};
+    OrderType order_type{OrderType::market};
+};
+
+struct AuditEvent {
+    std::int64_t timestamp{0};
+    std::int64_t order_id{0};
+    std::int64_t parent_order_id{0};
+    std::int64_t asset{-1};
+    AuditEventType type{AuditEventType::order_submitted};
+    double value{0.0};
+};
+
+struct LedgerEntry {
+    std::int64_t sequence{0};
+    std::int64_t timestamp{0};
+    std::int64_t order_id{0};
+    std::int64_t parent_order_id{0};
+    std::int64_t asset{-1};
+    AuditEventType type{AuditEventType::order_submitted};
+    std::int64_t quantity{0};
+    std::int64_t remaining_quantity{0};
+    double price{0.0};
+    double cash_after{0.0};
+    double equity_after{0.0};
+    double value{0.0};
+};
+
+struct BacktestResult {
+    double ending_cash{0.0};
+    double ending_equity{0.0};
+    double pnl{0.0};
+    double turnover{0.0};
+    double total_fees{0.0};
+    double total_borrow_cost{0.0};
+    double total_cash_yield{0.0};
+    double peak_equity{0.0};
+    double max_drawdown{0.0};
+    std::int64_t submitted_orders{0};
+    std::int64_t filled_orders{0};
+    std::int64_t rejected_orders{0};
+    bool halted_by_risk{false};
+    std::vector<double> equity_curve{};
+    std::vector<double> cash_curve{};
+    std::vector<std::int64_t> positions{};
+    std::vector<Fill> fills{};
+    std::vector<AuditEvent> audit_events{};
+    std::vector<LedgerEntry> ledger{};
+};
+
+class Backtester {
+public:
+    [[nodiscard]] BacktestResult run(
+        std::span<const std::int64_t> timestamps,
+        std::span<const double> close,
+        std::span<const double> high,
+        std::span<const double> low,
+        std::span<const double> volume,
+        std::span<const double> bid,
+        std::span<const double> ask,
+        std::span<const std::int64_t> target_positions,
+        std::span<const std::int8_t> order_types,
+        std::span<const double> limit_prices,
+        std::span<const std::uint8_t> tradable_mask,
+        std::size_t rows,
+        std::size_t cols,
+        const BacktestConfig& config
+    ) const;
+};
+
+}  // namespace nanoback

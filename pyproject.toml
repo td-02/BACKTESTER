@@ -1,0 +1,23 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "nanoback"
+version = "0.1.0"
+description = "Low-latency event-driven trading backtester with a C++ core and Python bindings."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "OpenAI Codex" }]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+io = ["pandas>=2.2", "pyarrow>=15.0"]
+
+[tool.scikit-build]
+wheel.packages = ["python/nanoback"]
+cmake.build-type = "Release"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
