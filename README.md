@@ -1,45 +1,73 @@
-# nanoback
+# BACKTESTER
 
-`nanoback` is an event-driven trading backtester with a C++20 execution core and a Python package wrapper.
+`BACKTESTER` is a low-latency, event-driven trading backtesting repo built around a C++20 execution engine and exposed through a Python package named `nanoback`.
 
-## Implemented
+## What It Does
 
-- Multi-asset matrix backtests
+- Multi-asset backtests over contiguous matrix inputs
 - Market and limit order simulation
-- Partial fills using a max participation rate
-- Latency steps and configurable slippage/commission
-- Session gating through a tradable mask or `SessionCalendar`
-- Python strategy/plugin interface
+- Partial fills, queue blocking, venue caps, and bid/ask-aware execution
+- Parent/child order IDs with deterministic audit ledger output
+- Snapshot/resume support for long-running simulations
+- Risk controls for leverage, drawdown, cash, and per-asset limits
+- Financing and borrow-cost accrual
+- Compiled research policies and analytics in C++
+- Python strategy/plugin fallback
 - CSV and Parquet loaders
-- Benchmark script and pytest coverage
+- Asserted benchmarks and pytest coverage
 
-## Layout
+## Repo Layout
 
 - `include/nanoback`: C++ headers
-- `cpp`: C++ engine and bindings
-- `python/nanoback`: Python API, loaders, strategies, calendars
+- `cpp`: C++ engine, policies, and Python bindings
+- `python/nanoback`: Python API, loaders, ledger utilities, and strategy helpers
 - `examples`: runnable examples
-- `benchmarks`: micro-benchmark scripts
-- `tests`: functional coverage
+- `benchmarks`: performance checks
+- `tests`: regression and functional coverage
 
 ## Quickstart
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .[dev]
-pytest
-```
-
-On Windows PowerShell:
-
 ```powershell
+cd C:\Users\TAPESH\documents\BACKTESTEER
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .[dev]
-pytest
+python -m pytest
 ```
 
-## Single-asset wrapper
+## Core Capabilities
+
+### Execution Engine
+
+- Event-driven C++20 core
+- Market and limit orders
+- Child-order slicing with delay steps
+- Cancel/replace semantics
+- Session-aware order cancellation
+- Snapshot/resume from engine state
+
+### Market Realism
+
+- Bid/ask execution path
+- Queue-ahead fraction and venue volume share caps
+- Slippage and participation-based impact
+- Cost calibration helpers from empirical fill data
+
+### Risk and Audit
+
+- Gross leverage checks
+- Drawdown kill switch
+- Cash and borrow accounting
+- Per-asset max position and notional limits
+- Deterministic ledger export to CSV/JSONL
+
+### Research Layer
+
+- Compiled momentum, mean reversion, and moving-average crossover policies
+- Compiled rolling volatility, cross-sectional ranking, and minimum-variance weights
+- Python strategy hooks when custom event logic is needed
+
+## Minimal Example
 
 ```python
 import numpy as np
@@ -47,24 +75,25 @@ import nanoback as nb
 
 result = nb.run_backtest(
     timestamps=np.array([1, 2, 3, 4], dtype=np.int64),
-    prices=np.array([100.0, 101.0, 103.0, 102.0], dtype=np.float64),
-    signals=np.array([1, 1, -1, 0], dtype=np.int64),
-    config=nb.BacktestConfig(max_position=2),
+    prices=np.array([100.0, 101.0, 99.0, 102.0], dtype=np.float64),
+    signals=np.array([1, 1, 0, -1], dtype=np.int64),
+    config=nb.BacktestConfig(
+        max_position=2,
+        child_order_size=1,
+        child_slice_delay_steps=1,
+    ),
 )
 
 print(result.pnl)
+print(len(result.ledger))
 ```
 
-## Strategy API
+## Benchmark
 
-```python
-import nanoback as nb
-
-class BuyFirstAsset(nb.Strategy):
-    def on_event(self, event):
-        if event.index == 0:
-            return [nb.OrderIntent(asset=0, target_position=2)]
-        return ()
+```powershell
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --max-seconds 0.50 --min-fills 1000
 ```
 
-Use `nb.run_strategy_backtest(...)` to transform strategy output into target matrices and execute in the C++ engine.
+## Status
+
+The repo is strong as a research and simulation engine. It is not a full OMS/EMS, exchange adapter stack, or compliance platform.

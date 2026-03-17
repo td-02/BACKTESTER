@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "nanoback"
 version = "0.1.0"
-description = "Low-latency event-driven trading backtester with a C++ core and Python bindings."
+description = "C++20 event-driven trading backtester with Python bindings, snapshots, audit ledger, and microstructure-aware execution."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "OpenAI Codex" }]
