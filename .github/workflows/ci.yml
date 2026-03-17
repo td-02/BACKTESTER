@@ -27,4 +27,4 @@ jobs:
         run: python -m pytest
 
       - name: Benchmark Smoke
-        run: python benchmarks/benchmark_engine.py
+        run: python benchmarks/benchmark_engine.py --max-seconds 0.50 --min-fills 1000

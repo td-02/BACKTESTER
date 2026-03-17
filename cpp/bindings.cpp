@@ -25,10 +25,7 @@ template <typename T>
     if (array.ndim() != 1) {
         throw std::invalid_argument(std::string{name} + " must be a 1D contiguous array");
     }
-    return {
-        static_cast<const T*>(array.data()),
-        static_cast<std::size_t>(array.shape(0))
-    };
+    return {static_cast<const T*>(array.data()), static_cast<std::size_t>(array.shape(0))};
 }
 
 template <typename T>
@@ -57,11 +54,7 @@ template <typename T>
 }
 
 template <typename T>
-[[nodiscard]] py::array_t<T> to_numpy_2d(
-    const std::vector<T>& values,
-    const std::size_t rows,
-    const std::size_t cols
-) {
+[[nodiscard]] py::array_t<T> to_numpy_2d(const std::vector<T>& values, std::size_t rows, std::size_t cols) {
     py::array_t<T> out({rows, cols});
     std::copy(values.begin(), values.end(), static_cast<T*>(out.mutable_data()));
     return out;
@@ -89,7 +82,9 @@ PYBIND11_MODULE(_nanoback, module) {
         .value("ORDER_CANCELLED_SESSION", AuditEventType::order_cancelled_session)
         .value("FILL_APPLIED", AuditEventType::fill_applied)
         .value("RISK_KILL_SWITCH", AuditEventType::risk_kill_switch)
-        .value("ORDER_WAITING_QUEUE", AuditEventType::order_waiting_queue);
+        .value("ORDER_WAITING_QUEUE", AuditEventType::order_waiting_queue)
+        .value("ORDER_CANCELLED_REPLACE", AuditEventType::order_cancelled_replace)
+        .value("SNAPSHOT_LOADED", AuditEventType::snapshot_loaded);
 
     py::class_<BacktestConfig>(module, "BacktestConfig")
         .def(
@@ -103,6 +98,7 @@ PYBIND11_MODULE(_nanoback, module) {
                         std::int64_t max_position,
                         std::int64_t latency_steps,
                         std::int64_t child_order_size,
+                        std::int64_t child_slice_delay_steps,
                         double annual_borrow_bps,
                         double annual_cash_yield_bps,
                         double max_gross_leverage,
@@ -125,6 +121,7 @@ PYBIND11_MODULE(_nanoback, module) {
                     .max_position = max_position,
                     .latency_steps = latency_steps,
                     .child_order_size = child_order_size,
+                    .child_slice_delay_steps = child_slice_delay_steps,
                     .annual_borrow_bps = annual_borrow_bps,
                     .annual_cash_yield_bps = annual_cash_yield_bps,
                     .max_gross_leverage = max_gross_leverage,
@@ -148,6 +145,7 @@ PYBIND11_MODULE(_nanoback, module) {
             py::arg("max_position") = 1,
             py::arg("latency_steps") = 0,
             py::arg("child_order_size") = 0,
+            py::arg("child_slice_delay_steps") = 0,
             py::arg("annual_borrow_bps") = 0.0,
             py::arg("annual_cash_yield_bps") = 0.0,
             py::arg("max_gross_leverage") = 10.0,
@@ -170,6 +168,7 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readwrite("max_position", &BacktestConfig::max_position)
         .def_readwrite("latency_steps", &BacktestConfig::latency_steps)
         .def_readwrite("child_order_size", &BacktestConfig::child_order_size)
+        .def_readwrite("child_slice_delay_steps", &BacktestConfig::child_slice_delay_steps)
         .def_readwrite("annual_borrow_bps", &BacktestConfig::annual_borrow_bps)
         .def_readwrite("annual_cash_yield_bps", &BacktestConfig::annual_cash_yield_bps)
         .def_readwrite("max_gross_leverage", &BacktestConfig::max_gross_leverage)
@@ -181,6 +180,31 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readwrite("mark_to_market", &BacktestConfig::mark_to_market)
         .def_readwrite("cancel_orders_outside_session", &BacktestConfig::cancel_orders_outside_session)
         .def_readwrite("use_bid_ask_execution", &BacktestConfig::use_bid_ask_execution);
+
+    py::class_<EngineSnapshot>(module, "EngineSnapshot")
+        .def(py::init<>())
+        .def_readwrite("next_row", &EngineSnapshot::next_row)
+        .def_readwrite("cash", &EngineSnapshot::cash)
+        .def_readwrite("peak_equity", &EngineSnapshot::peak_equity)
+        .def_readwrite("total_fees", &EngineSnapshot::total_fees)
+        .def_readwrite("total_borrow_cost", &EngineSnapshot::total_borrow_cost)
+        .def_readwrite("total_cash_yield", &EngineSnapshot::total_cash_yield)
+        .def_readwrite("turnover", &EngineSnapshot::turnover)
+        .def_readwrite("submitted_orders", &EngineSnapshot::submitted_orders)
+        .def_readwrite("filled_orders", &EngineSnapshot::filled_orders)
+        .def_readwrite("rejected_orders", &EngineSnapshot::rejected_orders)
+        .def_readwrite("next_parent_order_id", &EngineSnapshot::next_parent_order_id)
+        .def_readwrite("next_child_order_id", &EngineSnapshot::next_child_order_id)
+        .def_readwrite("next_ledger_sequence", &EngineSnapshot::next_ledger_sequence)
+        .def_readwrite("halted_by_risk", &EngineSnapshot::halted_by_risk)
+        .def_readwrite("positions", &EngineSnapshot::positions)
+        .def_readwrite("pending_parent_order_ids", &EngineSnapshot::pending_parent_order_ids)
+        .def_readwrite("pending_target_positions", &EngineSnapshot::pending_target_positions)
+        .def_readwrite("pending_remaining_quantities", &EngineSnapshot::pending_remaining_quantities)
+        .def_readwrite("pending_limit_prices", &EngineSnapshot::pending_limit_prices)
+        .def_readwrite("pending_order_types", &EngineSnapshot::pending_order_types)
+        .def_readwrite("pending_ready_indices", &EngineSnapshot::pending_ready_indices)
+        .def_readwrite("pending_active", &EngineSnapshot::pending_active);
 
     py::class_<Fill>(module, "Fill")
         .def_readonly("timestamp", &Fill::timestamp)
@@ -243,58 +267,70 @@ PYBIND11_MODULE(_nanoback, module) {
         )
         .def_readonly("fills", &BacktestResult::fills)
         .def_readonly("audit_events", &BacktestResult::audit_events)
-        .def_readonly("ledger", &BacktestResult::ledger);
+        .def_readonly("ledger", &BacktestResult::ledger)
+        .def_readonly("snapshot", &BacktestResult::snapshot);
+
+    auto run_impl = [](const Backtester& self,
+                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
+                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
+                       const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
+                       const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
+                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& asset_max_positions,
+                       const py::array_t<double, py::array::c_style | py::array::forcecast>& asset_notional_limits,
+                       const BacktestConfig& config,
+                       py::object snapshot_obj,
+                       std::size_t start_row,
+                       std::size_t end_row) {
+        const auto ts_view = checked_1d_span(timestamps, "timestamps");
+        const auto close_view = checked_2d_matrix(close, "close");
+        const auto high_view = checked_2d_matrix(high, "high");
+        const auto low_view = checked_2d_matrix(low, "low");
+        const auto volume_view = checked_2d_matrix(volume, "volume");
+        const auto bid_view = checked_2d_matrix(bid, "bid");
+        const auto ask_view = checked_2d_matrix(ask, "ask");
+        const auto target_view = checked_2d_matrix(target_positions, "target_positions");
+        const auto type_view = checked_2d_matrix(order_types, "order_types");
+        const auto limit_view = checked_2d_matrix(limit_prices, "limit_prices");
+        const auto tradable_view = checked_1d_span(tradable_mask, "tradable_mask");
+        const auto asset_max_view = checked_1d_span(asset_max_positions, "asset_max_positions");
+        const auto asset_notional_view = checked_1d_span(asset_notional_limits, "asset_notional_limits");
+        const EngineSnapshot* snapshot = snapshot_obj.is_none() ? nullptr : &snapshot_obj.cast<const EngineSnapshot&>();
+
+        return self.run(
+            ts_view,
+            close_view.values,
+            high_view.values,
+            low_view.values,
+            volume_view.values,
+            bid_view.values,
+            ask_view.values,
+            target_view.values,
+            type_view.values,
+            limit_view.values,
+            tradable_view,
+            asset_max_view,
+            asset_notional_view,
+            close_view.rows,
+            close_view.cols,
+            config,
+            snapshot,
+            start_row,
+            end_row
+        );
+    };
 
     py::class_<Backtester>(module, "Backtester")
         .def(py::init<>())
         .def(
             "run_matrix",
-            [](const Backtester& self,
-               const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
-               const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
-               const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
-               const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
-               const BacktestConfig& config) {
-                const auto ts_view = checked_1d_span(timestamps, "timestamps");
-                const auto close_view = checked_2d_matrix(close, "close");
-                const auto high_view = checked_2d_matrix(high, "high");
-                const auto low_view = checked_2d_matrix(low, "low");
-                const auto volume_view = checked_2d_matrix(volume, "volume");
-                const auto bid_view = checked_2d_matrix(bid, "bid");
-                const auto ask_view = checked_2d_matrix(ask, "ask");
-                const auto target_view = checked_2d_matrix(target_positions, "target_positions");
-                const auto type_view = checked_2d_matrix(order_types, "order_types");
-                const auto limit_view = checked_2d_matrix(limit_prices, "limit_prices");
-                const auto tradable_view = checked_1d_span(tradable_mask, "tradable_mask");
-
-                if (close_view.rows != target_view.rows || close_view.cols != target_view.cols) {
-                    throw std::invalid_argument("close and target_positions must have the same shape");
-                }
-
-                return self.run(
-                    ts_view,
-                    close_view.values,
-                    high_view.values,
-                    low_view.values,
-                    volume_view.values,
-                    bid_view.values,
-                    ask_view.values,
-                    target_view.values,
-                    type_view.values,
-                    limit_view.values,
-                    tradable_view,
-                    close_view.rows,
-                    close_view.cols,
-                    config
-                );
-            },
+            run_impl,
             py::arg("timestamps"),
             py::arg("close"),
             py::arg("high"),
@@ -306,232 +342,35 @@ PYBIND11_MODULE(_nanoback, module) {
             py::arg("order_types"),
             py::arg("limit_prices"),
             py::arg("tradable_mask"),
-            py::arg("config") = BacktestConfig{}
-        );
-
-    py::class_<PolicyEngine>(module, "PolicyEngine")
-        .def(py::init<>())
-        .def(
-            "rolling_volatility",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t window) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                return to_numpy_2d(
-                    self.rolling_volatility(close_view.values, close_view.rows, close_view.cols, window),
-                    close_view.rows,
-                    close_view.cols
-                );
-            },
-            py::arg("close"),
-            py::arg("window")
-        )
-        .def(
-            "cross_sectional_rank",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& values,
-               bool descending) {
-                const auto view = checked_2d_matrix(values, "values");
-                return to_numpy_2d(
-                    self.cross_sectional_rank(view.values, view.rows, view.cols, descending),
-                    view.rows,
-                    view.cols
-                );
-            },
-            py::arg("values"),
-            py::arg("descending") = true
-        )
-        .def(
-            "minimum_variance_weights",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t window,
-               double ridge,
-               double leverage) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                return to_numpy_2d(
-                    self.minimum_variance_weights(
-                        close_view.values,
-                        close_view.rows,
-                        close_view.cols,
-                        window,
-                        ridge,
-                        leverage
-                    ),
-                    close_view.rows,
-                    close_view.cols
-                );
-            },
-            py::arg("close"),
-            py::arg("window"),
-            py::arg("ridge") = 1e-6,
-            py::arg("leverage") = 1.0
-        )
-        .def(
-            "momentum_targets",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t lookback,
-               std::int64_t max_position) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                auto targets = self.momentum_targets(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    lookback,
-                    max_position
-                );
-                return to_numpy_2d(targets, close_view.rows, close_view.cols);
-            },
-            py::arg("close"),
-            py::arg("lookback"),
-            py::arg("max_position")
-        )
-        .def(
-            "mean_reversion_targets",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t lookback,
-               std::int64_t max_position) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                auto targets = self.mean_reversion_targets(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    lookback,
-                    max_position
-                );
-                return to_numpy_2d(targets, close_view.rows, close_view.cols);
-            },
-            py::arg("close"),
-            py::arg("lookback"),
-            py::arg("max_position")
-        )
-        .def(
-            "moving_average_crossover_targets",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t fast_window,
-               std::size_t slow_window,
-               std::int64_t max_position) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                auto targets = self.moving_average_crossover_targets(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    fast_window,
-                    slow_window,
-                    max_position
-                );
-                return to_numpy_2d(targets, close_view.rows, close_view.cols);
-            },
-            py::arg("close"),
-            py::arg("fast_window"),
-            py::arg("slow_window"),
-            py::arg("max_position")
-        )
-        .def(
-            "volatility_filtered_momentum_targets",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t lookback,
-               std::size_t vol_window,
-               double volatility_ceiling,
-               std::int64_t max_position) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                return to_numpy_2d(
-                    self.volatility_filtered_momentum_targets(
-                        close_view.values,
-                        close_view.rows,
-                        close_view.cols,
-                        lookback,
-                        vol_window,
-                        volatility_ceiling,
-                        max_position
-                    ),
-                    close_view.rows,
-                    close_view.cols
-                );
-            },
-            py::arg("close"),
-            py::arg("lookback"),
-            py::arg("vol_window"),
-            py::arg("volatility_ceiling"),
-            py::arg("max_position")
-        )
-        .def(
-            "cross_sectional_momentum_targets",
-            [](const PolicyEngine& self,
-               const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-               std::size_t lookback,
-               std::size_t winners,
-               std::size_t losers,
-               std::int64_t max_position) {
-                const auto close_view = checked_2d_matrix(close, "close");
-                return to_numpy_2d(
-                    self.cross_sectional_momentum_targets(
-                        close_view.values,
-                        close_view.rows,
-                        close_view.cols,
-                        lookback,
-                        winners,
-                        losers,
-                        max_position
-                    ),
-                    close_view.rows,
-                    close_view.cols
-                );
-            },
-            py::arg("close"),
-            py::arg("lookback"),
-            py::arg("winners"),
-            py::arg("losers"),
-            py::arg("max_position")
+            py::arg("asset_max_positions"),
+            py::arg("asset_notional_limits"),
+            py::arg("config") = BacktestConfig{},
+            py::arg("snapshot") = py::none(),
+            py::arg("start_row") = 0,
+            py::arg("end_row") = static_cast<std::size_t>(-1)
         );
 
     module.def(
         "run_backtest_matrix",
-        [](const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
-           const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
-           const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
-           const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
-           const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
-           const BacktestConfig& config) {
+        [run_impl](const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
+                   const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
+                   const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
+                   const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
+                   const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& asset_max_positions,
+                   const py::array_t<double, py::array::c_style | py::array::forcecast>& asset_notional_limits,
+                   const BacktestConfig& config,
+                   py::object snapshot,
+                   std::size_t start_row,
+                   std::size_t end_row) {
             Backtester backtester;
-            const auto ts_view = checked_1d_span(timestamps, "timestamps");
-            const auto close_view = checked_2d_matrix(close, "close");
-            const auto high_view = checked_2d_matrix(high, "high");
-            const auto low_view = checked_2d_matrix(low, "low");
-            const auto volume_view = checked_2d_matrix(volume, "volume");
-            const auto bid_view = checked_2d_matrix(bid, "bid");
-            const auto ask_view = checked_2d_matrix(ask, "ask");
-            const auto target_view = checked_2d_matrix(target_positions, "target_positions");
-            const auto type_view = checked_2d_matrix(order_types, "order_types");
-            const auto limit_view = checked_2d_matrix(limit_prices, "limit_prices");
-            const auto tradable_view = checked_1d_span(tradable_mask, "tradable_mask");
-
-            return backtester.run(
-                ts_view,
-                close_view.values,
-                high_view.values,
-                low_view.values,
-                volume_view.values,
-                bid_view.values,
-                ask_view.values,
-                target_view.values,
-                type_view.values,
-                limit_view.values,
-                tradable_view,
-                close_view.rows,
-                close_view.cols,
-                config
-            );
+            return run_impl(backtester, timestamps, close, high, low, volume, bid, ask, target_positions, order_types, limit_prices, tradable_mask, asset_max_positions, asset_notional_limits, config, snapshot, start_row, end_row);
         },
         py::arg("timestamps"),
         py::arg("close"),
@@ -544,193 +383,96 @@ PYBIND11_MODULE(_nanoback, module) {
         py::arg("order_types"),
         py::arg("limit_prices"),
         py::arg("tradable_mask"),
-        py::arg("config") = BacktestConfig{}
+        py::arg("asset_max_positions"),
+        py::arg("asset_notional_limits"),
+        py::arg("config") = BacktestConfig{},
+        py::arg("snapshot") = py::none(),
+        py::arg("start_row") = 0,
+        py::arg("end_row") = static_cast<std::size_t>(-1)
     );
 
-    module.def(
-        "rolling_volatility",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t window) {
-            PolicyEngine engine;
+    py::class_<PolicyEngine>(module, "PolicyEngine")
+        .def(py::init<>())
+        .def("rolling_volatility", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t window) {
             const auto close_view = checked_2d_matrix(close, "close");
-            return to_numpy_2d(
-                engine.rolling_volatility(close_view.values, close_view.rows, close_view.cols, window),
-                close_view.rows,
-                close_view.cols
-            );
-        },
-        py::arg("close"),
-        py::arg("window")
-    );
-
-    module.def(
-        "cross_sectional_rank",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& values,
-           bool descending) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.rolling_volatility(close_view.values, close_view.rows, close_view.cols, window), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("window"))
+        .def("cross_sectional_rank", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& values, bool descending) {
             const auto view = checked_2d_matrix(values, "values");
-            return to_numpy_2d(
-                engine.cross_sectional_rank(view.values, view.rows, view.cols, descending),
-                view.rows,
-                view.cols
-            );
-        },
-        py::arg("values"),
-        py::arg("descending") = true
-    );
-
-    module.def(
-        "minimum_variance_weights",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t window,
-           double ridge,
-           double leverage) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.cross_sectional_rank(view.values, view.rows, view.cols, descending), view.rows, view.cols);
+        }, py::arg("values"), py::arg("descending") = true)
+        .def("minimum_variance_weights", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t window, double ridge, double leverage) {
             const auto close_view = checked_2d_matrix(close, "close");
-            return to_numpy_2d(
-                engine.minimum_variance_weights(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    window,
-                    ridge,
-                    leverage
-                ),
-                close_view.rows,
-                close_view.cols
-            );
-        },
-        py::arg("close"),
-        py::arg("window"),
-        py::arg("ridge") = 1e-6,
-        py::arg("leverage") = 1.0
-    );
-
-    module.def(
-        "momentum_targets",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t lookback,
-           std::int64_t max_position) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.minimum_variance_weights(close_view.values, close_view.rows, close_view.cols, window, ridge, leverage), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("window"), py::arg("ridge") = 1e-6, py::arg("leverage") = 1.0)
+        .def("momentum_targets", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::int64_t max_position) {
             const auto close_view = checked_2d_matrix(close, "close");
-            auto targets = engine.momentum_targets(
-                close_view.values,
-                close_view.rows,
-                close_view.cols,
-                lookback,
-                max_position
-            );
-            return to_numpy_2d(targets, close_view.rows, close_view.cols);
-        },
-        py::arg("close"),
-        py::arg("lookback"),
-        py::arg("max_position")
-    );
-
-    module.def(
-        "mean_reversion_targets",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t lookback,
-           std::int64_t max_position) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, max_position), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("lookback"), py::arg("max_position"))
+        .def("mean_reversion_targets", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::int64_t max_position) {
             const auto close_view = checked_2d_matrix(close, "close");
-            auto targets = engine.mean_reversion_targets(
-                close_view.values,
-                close_view.rows,
-                close_view.cols,
-                lookback,
-                max_position
-            );
-            return to_numpy_2d(targets, close_view.rows, close_view.cols);
-        },
-        py::arg("close"),
-        py::arg("lookback"),
-        py::arg("max_position")
-    );
-
-    module.def(
-        "moving_average_crossover_targets",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t fast_window,
-           std::size_t slow_window,
-           std::int64_t max_position) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.mean_reversion_targets(close_view.values, close_view.rows, close_view.cols, lookback, max_position), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("lookback"), py::arg("max_position"))
+        .def("moving_average_crossover_targets", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t fast_window, std::size_t slow_window, std::int64_t max_position) {
             const auto close_view = checked_2d_matrix(close, "close");
-            auto targets = engine.moving_average_crossover_targets(
-                close_view.values,
-                close_view.rows,
-                close_view.cols,
-                fast_window,
-                slow_window,
-                max_position
-            );
-            return to_numpy_2d(targets, close_view.rows, close_view.cols);
-        },
-        py::arg("close"),
-        py::arg("fast_window"),
-        py::arg("slow_window"),
-        py::arg("max_position")
-    );
-
-    module.def(
-        "volatility_filtered_momentum_targets",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t lookback,
-           std::size_t vol_window,
-           double volatility_ceiling,
-           std::int64_t max_position) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.moving_average_crossover_targets(close_view.values, close_view.rows, close_view.cols, fast_window, slow_window, max_position), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("fast_window"), py::arg("slow_window"), py::arg("max_position"))
+        .def("volatility_filtered_momentum_targets", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::size_t vol_window, double volatility_ceiling, std::int64_t max_position) {
             const auto close_view = checked_2d_matrix(close, "close");
-            return to_numpy_2d(
-                engine.volatility_filtered_momentum_targets(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    lookback,
-                    vol_window,
-                    volatility_ceiling,
-                    max_position
-                ),
-                close_view.rows,
-                close_view.cols
-            );
-        },
-        py::arg("close"),
-        py::arg("lookback"),
-        py::arg("vol_window"),
-        py::arg("volatility_ceiling"),
-        py::arg("max_position")
-    );
-
-    module.def(
-        "cross_sectional_momentum_targets",
-        [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-           std::size_t lookback,
-           std::size_t winners,
-           std::size_t losers,
-           std::int64_t max_position) {
-            PolicyEngine engine;
+            return to_numpy_2d(self.volatility_filtered_momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, vol_window, volatility_ceiling, max_position), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("lookback"), py::arg("vol_window"), py::arg("volatility_ceiling"), py::arg("max_position"))
+        .def("cross_sectional_momentum_targets", [](const PolicyEngine& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::size_t winners, std::size_t losers, std::int64_t max_position) {
             const auto close_view = checked_2d_matrix(close, "close");
-            return to_numpy_2d(
-                engine.cross_sectional_momentum_targets(
-                    close_view.values,
-                    close_view.rows,
-                    close_view.cols,
-                    lookback,
-                    winners,
-                    losers,
-                    max_position
-                ),
-                close_view.rows,
-                close_view.cols
-            );
-        },
-        py::arg("close"),
-        py::arg("lookback"),
-        py::arg("winners"),
-        py::arg("losers"),
-        py::arg("max_position")
-    );
+            return to_numpy_2d(self.cross_sectional_momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, winners, losers, max_position), close_view.rows, close_view.cols);
+        }, py::arg("close"), py::arg("lookback"), py::arg("winners"), py::arg("losers"), py::arg("max_position"));
+
+    module.def("rolling_volatility", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t window) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.rolling_volatility(close_view.values, close_view.rows, close_view.cols, window), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("window"));
+
+    module.def("cross_sectional_rank", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& values, bool descending) {
+        PolicyEngine engine;
+        const auto view = checked_2d_matrix(values, "values");
+        return to_numpy_2d(engine.cross_sectional_rank(view.values, view.rows, view.cols, descending), view.rows, view.cols);
+    }, py::arg("values"), py::arg("descending") = true);
+
+    module.def("minimum_variance_weights", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t window, double ridge, double leverage) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.minimum_variance_weights(close_view.values, close_view.rows, close_view.cols, window, ridge, leverage), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("window"), py::arg("ridge") = 1e-6, py::arg("leverage") = 1.0);
+
+    module.def("momentum_targets", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::int64_t max_position) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, max_position), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("lookback"), py::arg("max_position"));
+
+    module.def("mean_reversion_targets", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::int64_t max_position) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.mean_reversion_targets(close_view.values, close_view.rows, close_view.cols, lookback, max_position), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("lookback"), py::arg("max_position"));
+
+    module.def("moving_average_crossover_targets", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t fast_window, std::size_t slow_window, std::int64_t max_position) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.moving_average_crossover_targets(close_view.values, close_view.rows, close_view.cols, fast_window, slow_window, max_position), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("fast_window"), py::arg("slow_window"), py::arg("max_position"));
+
+    module.def("volatility_filtered_momentum_targets", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::size_t vol_window, double volatility_ceiling, std::int64_t max_position) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.volatility_filtered_momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, vol_window, volatility_ceiling, max_position), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("lookback"), py::arg("vol_window"), py::arg("volatility_ceiling"), py::arg("max_position"));
+
+    module.def("cross_sectional_momentum_targets", [](const py::array_t<double, py::array::c_style | py::array::forcecast>& close, std::size_t lookback, std::size_t winners, std::size_t losers, std::int64_t max_position) {
+        PolicyEngine engine;
+        const auto close_view = checked_2d_matrix(close, "close");
+        return to_numpy_2d(engine.cross_sectional_momentum_targets(close_view.values, close_view.rows, close_view.cols, lookback, winners, losers, max_position), close_view.rows, close_view.cols);
+    }, py::arg("close"), py::arg("lookback"), py::arg("winners"), py::arg("losers"), py::arg("max_position"));
 }
 
 }  // namespace nanoback

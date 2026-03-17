@@ -5,12 +5,7 @@ from typing import Sequence
 
 import numpy as np
 
-from ._nanoback import (
-    BacktestConfig,
-    Backtester,
-    OrderType,
-    run_backtest_matrix as _run_backtest_matrix,
-)
+from ._nanoback import BacktestConfig, EngineSnapshot, OrderType, run_backtest_matrix as _run_backtest_matrix
 
 
 @dataclass(slots=True)
@@ -74,6 +69,10 @@ class PythonBacktestResult:
         return self.raw.ledger
 
     @property
+    def snapshot(self):
+        return self.raw.snapshot
+
+    @property
     def submitted_orders(self) -> int:
         return int(self.raw.submitted_orders)
 
@@ -95,6 +94,15 @@ def _as_matrix(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
     return np.ascontiguousarray(array)
 
 
+def _as_vector(values: np.ndarray | Sequence[float], dtype: np.dtype, length: int, fill_value: float | int) -> np.ndarray:
+    if values is None:
+        return np.full(length, fill_value, dtype=dtype)
+    array = np.asarray(values, dtype=dtype)
+    if array.ndim != 1 or array.shape[0] != length:
+        raise ValueError("expected a 1D vector with matching length")
+    return np.ascontiguousarray(array)
+
+
 def run_backtest_matrix(
     *,
     timestamps: np.ndarray,
@@ -108,35 +116,37 @@ def run_backtest_matrix(
     order_types: np.ndarray | None = None,
     limit_prices: np.ndarray | None = None,
     tradable_mask: np.ndarray | None = None,
+    asset_max_positions: np.ndarray | None = None,
+    asset_notional_limits: np.ndarray | None = None,
     config: BacktestConfig | None = None,
     symbols: Sequence[str] | None = None,
+    snapshot: EngineSnapshot | None = None,
+    start_row: int = 0,
+    end_row: int | None = None,
 ) -> PythonBacktestResult:
     timestamps = np.asarray(timestamps, dtype=np.int64)
     close = _as_matrix(close, np.float64)
     rows, cols = close.shape
     high = close if high is None else _as_matrix(high, np.float64)
     low = close if low is None else _as_matrix(low, np.float64)
-    if volume is None:
-        volume = np.full((rows, cols), 1_000_000.0, dtype=np.float64)
-    else:
-        volume = _as_matrix(volume, np.float64)
+    volume = np.full((rows, cols), 1_000_000.0, dtype=np.float64) if volume is None else _as_matrix(volume, np.float64)
     bid = close if bid is None else _as_matrix(bid, np.float64)
     ask = close if ask is None else _as_matrix(ask, np.float64)
     target_positions = _as_matrix(target_positions, np.int64)
-    if order_types is None:
-        order_types = np.full((rows, cols), int(OrderType.MARKET), dtype=np.int8)
-    else:
-        order_types = _as_matrix(order_types, np.int8)
-    if limit_prices is None:
-        limit_prices = np.full((rows, cols), np.nan, dtype=np.float64)
-    else:
-        limit_prices = _as_matrix(limit_prices, np.float64)
-    if tradable_mask is None:
-        tradable_mask = np.ones(rows, dtype=np.uint8)
-    else:
-        tradable_mask = np.asarray(tradable_mask, dtype=np.uint8)
+    order_types = (
+        np.full((rows, cols), int(OrderType.MARKET), dtype=np.int8)
+        if order_types is None else _as_matrix(order_types, np.int8)
+    )
+    limit_prices = (
+        np.full((rows, cols), np.nan, dtype=np.float64)
+        if limit_prices is None else _as_matrix(limit_prices, np.float64)
+    )
+    tradable_mask = np.ones(rows, dtype=np.uint8) if tradable_mask is None else np.asarray(tradable_mask, dtype=np.uint8)
+    asset_max_positions = _as_vector(asset_max_positions, np.int64, cols, 0)
+    asset_notional_limits = _as_vector(asset_notional_limits, np.float64, cols, 0.0)
     config = config or BacktestConfig()
     symbols = list(symbols or [f"asset_{idx}" for idx in range(cols)])
+    effective_end_row = rows if end_row is None else end_row
 
     raw = _run_backtest_matrix(
         timestamps=timestamps,
@@ -150,7 +160,12 @@ def run_backtest_matrix(
         order_types=order_types,
         limit_prices=limit_prices,
         tradable_mask=tradable_mask,
+        asset_max_positions=asset_max_positions,
+        asset_notional_limits=asset_notional_limits,
         config=config,
+        snapshot=snapshot,
+        start_row=start_row,
+        end_row=effective_end_row,
     )
     return PythonBacktestResult(
         raw=raw,
@@ -174,7 +189,12 @@ def run_backtest(
     order_type: OrderType = OrderType.MARKET,
     limit_prices: np.ndarray | None = None,
     tradable_mask: np.ndarray | None = None,
+    asset_max_positions: np.ndarray | None = None,
+    asset_notional_limits: np.ndarray | None = None,
     config: BacktestConfig | None = None,
+    snapshot: EngineSnapshot | None = None,
+    start_row: int = 0,
+    end_row: int | None = None,
 ) -> PythonBacktestResult:
     prices = np.asarray(prices, dtype=np.float64)
     signals = np.asarray(signals, dtype=np.int64)
@@ -192,6 +212,11 @@ def run_backtest(
         order_types=order_types,
         limit_prices=None if limit_prices is None else np.asarray(limit_prices, dtype=np.float64).reshape(-1, 1),
         tradable_mask=tradable_mask,
+        asset_max_positions=asset_max_positions,
+        asset_notional_limits=asset_notional_limits,
         config=config,
         symbols=["asset_0"],
+        snapshot=snapshot,
+        start_row=start_row,
+        end_row=end_row,
     )

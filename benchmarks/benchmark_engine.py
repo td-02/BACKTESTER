@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import time
 
 import numpy as np
@@ -8,6 +9,11 @@ import nanoback as nb
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-seconds", type=float, default=0.25)
+    parser.add_argument("--min-fills", type=int, default=1_000)
+    args = parser.parse_args()
+
     rows = 50_000
     cols = 8
     rng = np.random.default_rng(42)
@@ -17,15 +23,21 @@ def main() -> None:
     high = close + spread
     low = close - spread
     volume = rng.integers(5_000, 20_000, size=(rows, cols)).astype(np.float64)
-    started = time.perf_counter()
+    bid = close - spread * 0.5
+    ask = close + spread * 0.5
     data = nb.MarketData(
         timestamps=timestamps,
         close=close,
         high=high,
         low=low,
         volume=volume,
+        bid=bid,
+        ask=ask,
         symbols=[f"asset_{idx}" for idx in range(cols)],
+        asset_configs=[nb.AssetConfig(symbol=f"asset_{idx}", max_position=5, notional_limit=5_000_000.0) for idx in range(cols)],
     )
+
+    started = time.perf_counter()
     result = nb.run_compiled_policy_backtest(
         data=data,
         policy="moving_average_crossover",
@@ -39,6 +51,9 @@ def main() -> None:
             max_position=5,
             max_participation_rate=0.2,
             latency_steps=1,
+            child_order_size=2,
+            child_slice_delay_steps=1,
+            use_bid_ask_execution=True,
         ),
     )
     elapsed = time.perf_counter() - started
@@ -46,6 +61,11 @@ def main() -> None:
     print(f"elapsed_seconds={elapsed:.4f}")
     print(f"rows={rows} cols={cols}")
     print(f"fills={len(result.fills)} pnl={result.pnl:.2f}")
+
+    if elapsed > args.max_seconds:
+        raise SystemExit(f"benchmark exceeded threshold: {elapsed:.4f}s > {args.max_seconds:.4f}s")
+    if len(result.fills) < args.min_fills:
+        raise SystemExit(f"benchmark produced too few fills: {len(result.fills)} < {args.min_fills}")
 
 
 if __name__ == "__main__":

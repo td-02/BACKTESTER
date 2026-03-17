@@ -27,6 +27,8 @@ enum class AuditEventType : std::int8_t {
     fill_applied = 5,
     risk_kill_switch = 6,
     order_waiting_queue = 7,
+    order_cancelled_replace = 8,
+    snapshot_loaded = 9,
 };
 
 struct BacktestConfig {
@@ -40,6 +42,7 @@ struct BacktestConfig {
     std::int64_t max_position{1};
     std::int64_t latency_steps{0};
     std::int64_t child_order_size{0};
+    std::int64_t child_slice_delay_steps{0};
     double annual_borrow_bps{0.0};
     double annual_cash_yield_bps{0.0};
     double max_gross_leverage{10.0};
@@ -51,6 +54,31 @@ struct BacktestConfig {
     bool mark_to_market{true};
     bool cancel_orders_outside_session{true};
     bool use_bid_ask_execution{false};
+};
+
+struct EngineSnapshot {
+    std::size_t next_row{0};
+    double cash{0.0};
+    double peak_equity{0.0};
+    double total_fees{0.0};
+    double total_borrow_cost{0.0};
+    double total_cash_yield{0.0};
+    double turnover{0.0};
+    std::int64_t submitted_orders{0};
+    std::int64_t filled_orders{0};
+    std::int64_t rejected_orders{0};
+    std::int64_t next_parent_order_id{1};
+    std::int64_t next_child_order_id{1'000'000};
+    std::int64_t next_ledger_sequence{1};
+    bool halted_by_risk{false};
+    std::vector<std::int64_t> positions{};
+    std::vector<std::int64_t> pending_parent_order_ids{};
+    std::vector<std::int64_t> pending_target_positions{};
+    std::vector<std::int64_t> pending_remaining_quantities{};
+    std::vector<double> pending_limit_prices{};
+    std::vector<std::int8_t> pending_order_types{};
+    std::vector<std::size_t> pending_ready_indices{};
+    std::vector<std::uint8_t> pending_active{};
 };
 
 struct Fill {
@@ -109,6 +137,7 @@ struct BacktestResult {
     std::vector<Fill> fills{};
     std::vector<AuditEvent> audit_events{};
     std::vector<LedgerEntry> ledger{};
+    EngineSnapshot snapshot{};
 };
 
 class Backtester {
@@ -125,9 +154,14 @@ public:
         std::span<const std::int8_t> order_types,
         std::span<const double> limit_prices,
         std::span<const std::uint8_t> tradable_mask,
+        std::span<const std::int64_t> asset_max_positions,
+        std::span<const double> asset_notional_limits,
         std::size_t rows,
         std::size_t cols,
-        const BacktestConfig& config
+        const BacktestConfig& config,
+        const EngineSnapshot* initial_snapshot = nullptr,
+        std::size_t start_row = 0,
+        std::size_t end_row = static_cast<std::size_t>(-1)
     ) const;
 };
 

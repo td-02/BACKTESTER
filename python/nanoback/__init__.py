@@ -1,8 +1,18 @@
-from ._nanoback import AuditEvent, AuditEventType, BacktestConfig, BacktestResult, Backtester, Fill, LedgerEntry, OrderType
+from ._nanoback import AuditEvent, AuditEventType, BacktestConfig, BacktestResult, Backtester, EngineSnapshot, Fill, LedgerEntry, OrderType
 from .calendar import SessionCalendar
 from .costs import CostCalibration, calibrate_cost_model, calibrate_cost_model_from_csv
-from .data import MarketData, load_csv, load_parquet
-from .ledger import ReplayState, export_ledger_csv, export_ledger_jsonl, load_ledger_csv, replay_ledger
+from .data import AssetConfig, MarketData, load_csv, load_parquet
+from .ledger import (
+    ReplayState,
+    export_ledger_csv,
+    export_ledger_jsonl,
+    load_ledger_csv,
+    load_snapshot,
+    replay_ledger,
+    save_snapshot,
+    snapshot_from_dict,
+    snapshot_to_dict,
+)
 from .strategy import (
     MarketEvent,
     OrderIntent,
@@ -29,6 +39,7 @@ __all__ = [
     "Backtester",
     "AuditEvent",
     "AuditEventType",
+    "AssetConfig",
     "compiled_cross_sectional_momentum_targets",
     "compiled_cross_sectional_rank",
     "compiled_mean_reversion_targets",
@@ -38,6 +49,7 @@ __all__ = [
     "compiled_rolling_volatility",
     "compiled_volatility_filtered_momentum_targets",
     "CostCalibration",
+    "EngineSnapshot",
     "export_ledger_csv",
     "export_ledger_jsonl",
     "Fill",
@@ -54,12 +66,16 @@ __all__ = [
     "load_csv",
     "load_ledger_csv",
     "load_parquet",
+    "load_snapshot",
     "load_strategy",
     "run_compiled_policy_backtest",
     "run_backtest",
     "run_backtest_matrix",
     "run_strategy_backtest",
+    "save_snapshot",
     "weights_to_positions",
     "ReplayState",
     "replay_ledger",
+    "snapshot_from_dict",
+    "snapshot_to_dict",
 ]

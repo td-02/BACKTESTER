@@ -1,10 +1,11 @@
 #include "nanoback/backtester.hpp"
 
-#include <cstdlib>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
-#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -20,6 +21,24 @@ struct PendingOrder {
     OrderType order_type{OrderType::market};
     std::size_t ready_index{0};
     bool active{false};
+};
+
+struct RuntimeState {
+    double cash{0.0};
+    double turnover{0.0};
+    double total_fees{0.0};
+    double total_borrow_cost{0.0};
+    double total_cash_yield{0.0};
+    double peak_equity{0.0};
+    std::int64_t submitted_orders{0};
+    std::int64_t filled_orders{0};
+    std::int64_t rejected_orders{0};
+    std::int64_t next_parent_order_id{1};
+    std::int64_t next_child_order_id{1'000'000};
+    std::int64_t next_ledger_sequence{1};
+    bool halted_by_risk{false};
+    std::vector<std::int64_t> positions{};
+    std::vector<PendingOrder> pending{};
 };
 
 [[nodiscard]] std::size_t offset(
@@ -47,16 +66,15 @@ struct PendingOrder {
     const double base_price,
     const std::int64_t signed_quantity,
     const double participation,
-    const BacktestConfig& config,
-    const SlippageModel model
+    const BacktestConfig& config
 ) {
-    if (model == SlippageModel::none || signed_quantity == 0) {
+    if (config.slippage_model == SlippageModel::none || signed_quantity == 0) {
         return base_price;
     }
 
     const auto side = signed_quantity > 0 ? 1.0 : -1.0;
     double impact_bps = config.slippage_bps;
-    if (model == SlippageModel::volume_share) {
+    if (config.slippage_model == SlippageModel::volume_share) {
         impact_bps += 10'000.0 * config.volume_share_impact * participation * participation;
     }
     return base_price * (1.0 + side * impact_bps * 1e-4);
@@ -102,12 +120,14 @@ struct PendingOrder {
 
 [[nodiscard]] std::int64_t clamp_target(
     const std::int64_t requested_target,
-    const BacktestConfig& config
+    const BacktestConfig& config,
+    const std::int64_t asset_max_position
 ) {
+    const auto max_position = asset_max_position > 0 ? asset_max_position : config.max_position;
     if (config.allow_short) {
-        return std::clamp<std::int64_t>(requested_target, -config.max_position, config.max_position);
+        return std::clamp<std::int64_t>(requested_target, -max_position, max_position);
     }
-    return std::clamp<std::int64_t>(requested_target, 0, config.max_position);
+    return std::clamp<std::int64_t>(requested_target, 0, max_position);
 }
 
 [[nodiscard]] double gross_exposure_after_fill(
@@ -127,6 +147,107 @@ struct PendingOrder {
     return gross;
 }
 
+[[nodiscard]] double notional_limit_for_asset(
+    std::span<const double> asset_notional_limits,
+    const std::size_t col
+) {
+    if (asset_notional_limits.empty()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const auto value = asset_notional_limits[col];
+    return value > 0.0 ? value : std::numeric_limits<double>::infinity();
+}
+
+[[nodiscard]] EngineSnapshot snapshot_from_state(
+    const RuntimeState& state,
+    const std::size_t next_row
+) {
+    EngineSnapshot snapshot{};
+    snapshot.next_row = next_row;
+    snapshot.cash = state.cash;
+    snapshot.peak_equity = state.peak_equity;
+    snapshot.total_fees = state.total_fees;
+    snapshot.total_borrow_cost = state.total_borrow_cost;
+    snapshot.total_cash_yield = state.total_cash_yield;
+    snapshot.turnover = state.turnover;
+    snapshot.submitted_orders = state.submitted_orders;
+    snapshot.filled_orders = state.filled_orders;
+    snapshot.rejected_orders = state.rejected_orders;
+    snapshot.next_parent_order_id = state.next_parent_order_id;
+    snapshot.next_child_order_id = state.next_child_order_id;
+    snapshot.next_ledger_sequence = state.next_ledger_sequence;
+    snapshot.halted_by_risk = state.halted_by_risk;
+    snapshot.positions = state.positions;
+    snapshot.pending_parent_order_ids.resize(state.pending.size());
+    snapshot.pending_target_positions.resize(state.pending.size());
+    snapshot.pending_remaining_quantities.resize(state.pending.size());
+    snapshot.pending_limit_prices.resize(state.pending.size());
+    snapshot.pending_order_types.resize(state.pending.size());
+    snapshot.pending_ready_indices.resize(state.pending.size());
+    snapshot.pending_active.resize(state.pending.size());
+
+    for (std::size_t idx = 0; idx < state.pending.size(); ++idx) {
+        const auto& order = state.pending[idx];
+        snapshot.pending_parent_order_ids[idx] = order.parent_order_id;
+        snapshot.pending_target_positions[idx] = order.target_position;
+        snapshot.pending_remaining_quantities[idx] = order.remaining_quantity;
+        snapshot.pending_limit_prices[idx] = order.limit_price;
+        snapshot.pending_order_types[idx] = static_cast<std::int8_t>(order.order_type);
+        snapshot.pending_ready_indices[idx] = order.ready_index;
+        snapshot.pending_active[idx] = static_cast<std::uint8_t>(order.active ? 1 : 0);
+    }
+    return snapshot;
+}
+
+[[nodiscard]] RuntimeState state_from_snapshot(
+    const EngineSnapshot* snapshot,
+    const std::size_t cols,
+    const double starting_cash
+) {
+    RuntimeState state{};
+    state.cash = snapshot ? snapshot->cash : starting_cash;
+    state.turnover = snapshot ? snapshot->turnover : 0.0;
+    state.total_fees = snapshot ? snapshot->total_fees : 0.0;
+    state.total_borrow_cost = snapshot ? snapshot->total_borrow_cost : 0.0;
+    state.total_cash_yield = snapshot ? snapshot->total_cash_yield : 0.0;
+    state.peak_equity = snapshot ? snapshot->peak_equity : starting_cash;
+    state.submitted_orders = snapshot ? snapshot->submitted_orders : 0;
+    state.filled_orders = snapshot ? snapshot->filled_orders : 0;
+    state.rejected_orders = snapshot ? snapshot->rejected_orders : 0;
+    state.next_parent_order_id = snapshot ? snapshot->next_parent_order_id : 1;
+    state.next_child_order_id = snapshot ? snapshot->next_child_order_id : 1'000'000;
+    state.next_ledger_sequence = snapshot ? snapshot->next_ledger_sequence : 1;
+    state.halted_by_risk = snapshot ? snapshot->halted_by_risk : false;
+    state.positions = snapshot ? snapshot->positions : std::vector<std::int64_t>(cols, 0);
+    if (state.positions.size() != cols) {
+        throw std::invalid_argument("snapshot positions size must match column count");
+    }
+    state.pending.resize(cols);
+    if (snapshot) {
+        if (snapshot->pending_parent_order_ids.size() != cols ||
+            snapshot->pending_target_positions.size() != cols ||
+            snapshot->pending_remaining_quantities.size() != cols ||
+            snapshot->pending_limit_prices.size() != cols ||
+            snapshot->pending_order_types.size() != cols ||
+            snapshot->pending_ready_indices.size() != cols ||
+            snapshot->pending_active.size() != cols) {
+            throw std::invalid_argument("snapshot pending order vectors must match column count");
+        }
+        for (std::size_t idx = 0; idx < cols; ++idx) {
+            state.pending[idx] = PendingOrder{
+                .parent_order_id = snapshot->pending_parent_order_ids[idx],
+                .target_position = snapshot->pending_target_positions[idx],
+                .remaining_quantity = snapshot->pending_remaining_quantities[idx],
+                .limit_price = snapshot->pending_limit_prices[idx],
+                .order_type = static_cast<OrderType>(snapshot->pending_order_types[idx]),
+                .ready_index = snapshot->pending_ready_indices[idx],
+                .active = snapshot->pending_active[idx] != 0,
+            };
+        }
+    }
+    return state;
+}
+
 }  // namespace
 
 BacktestResult Backtester::run(
@@ -141,25 +262,23 @@ BacktestResult Backtester::run(
     std::span<const std::int8_t> order_types,
     std::span<const double> limit_prices,
     std::span<const std::uint8_t> tradable_mask,
+    std::span<const std::int64_t> asset_max_positions,
+    std::span<const double> asset_notional_limits,
     const std::size_t rows,
     const std::size_t cols,
-    const BacktestConfig& config
+    const BacktestConfig& config,
+    const EngineSnapshot* initial_snapshot,
+    const std::size_t start_row,
+    const std::size_t end_row
 ) const {
     if (rows == 0 || cols == 0) {
-        return BacktestResult{
-            .ending_cash = config.starting_cash,
-            .ending_equity = config.starting_cash,
-            .pnl = 0.0,
-            .turnover = 0.0,
-            .submitted_orders = 0,
-            .filled_orders = 0,
-            .rejected_orders = 0,
-            .equity_curve = {},
-            .cash_curve = {},
-            .positions = {},
-            .fills = {},
-        };
+        BacktestResult empty{};
+        empty.ending_cash = config.starting_cash;
+        empty.ending_equity = config.starting_cash;
+        empty.snapshot = EngineSnapshot{.cash = config.starting_cash, .peak_equity = config.starting_cash};
+        return empty;
     }
+
     const auto matrix_size = rows * cols;
     if (timestamps.size() != rows) {
         throw std::invalid_argument("timestamps length must match row count");
@@ -178,10 +297,22 @@ BacktestResult Backtester::run(
     if (!tradable_mask.empty() && tradable_mask.size() != rows) {
         throw std::invalid_argument("tradable_mask length must match row count");
     }
+    if (!asset_max_positions.empty() && asset_max_positions.size() != cols) {
+        throw std::invalid_argument("asset_max_positions length must match column count");
+    }
+    if (!asset_notional_limits.empty() && asset_notional_limits.size() != cols) {
+        throw std::invalid_argument("asset_notional_limits length must match column count");
+    }
     if (config.lot_size <= 0 || config.max_position <= 0 || config.max_participation_rate <= 0.0 ||
         config.venue_volume_share_cap <= 0.0 || config.venue_volume_share_cap > 1.0 ||
-        config.queue_ahead_fraction < 0.0 || config.queue_ahead_fraction >= 1.0) {
-        throw std::invalid_argument("invalid sizing, participation, queue, or venue cap parameters");
+        config.queue_ahead_fraction < 0.0 || config.queue_ahead_fraction >= 1.0 ||
+        config.child_slice_delay_steps < 0) {
+        throw std::invalid_argument("invalid sizing, participation, queue, or scheduling parameters");
+    }
+
+    const auto bounded_end_row = std::min(end_row, rows);
+    if (start_row > bounded_end_row) {
+        throw std::invalid_argument("start_row must be <= end_row");
     }
 
     BacktestResult result{};
@@ -189,21 +320,10 @@ BacktestResult Backtester::run(
     result.cash_curve.resize(rows);
     result.positions.resize(matrix_size);
     result.fills.reserve(matrix_size);
-    result.audit_events.reserve(matrix_size * 2);
-    result.ledger.reserve(matrix_size * 3);
+    result.audit_events.reserve(matrix_size * 3);
+    result.ledger.reserve(matrix_size * 4);
 
-    double cash = config.starting_cash;
-    double turnover = 0.0;
-    double total_fees = 0.0;
-    double total_borrow_cost = 0.0;
-    double total_cash_yield = 0.0;
-    std::vector<std::int64_t> positions(cols, 0);
-    std::vector<PendingOrder> pending(cols);
-    double peak_equity = config.starting_cash;
-    bool halted_by_risk = false;
-    std::int64_t next_parent_order_id = 1;
-    std::int64_t next_child_order_id = 1'000'000;
-    std::int64_t next_ledger_sequence = 1;
+    auto state = state_from_snapshot(initial_snapshot, cols, config.starting_cash);
 
     auto append_ledger = [&](const std::int64_t timestamp,
                              const std::int64_t order_id,
@@ -217,7 +337,7 @@ BacktestResult Backtester::run(
                              const double equity_after,
                              const double value) {
         result.ledger.push_back(LedgerEntry{
-            .sequence = next_ledger_sequence++,
+            .sequence = state.next_ledger_sequence++,
             .timestamp = timestamp,
             .order_id = order_id,
             .parent_order_id = parent_order_id,
@@ -232,64 +352,71 @@ BacktestResult Backtester::run(
         });
     };
 
-    for (std::size_t row = 0; row < rows; ++row) {
+    if (initial_snapshot != nullptr) {
+        result.audit_events.push_back(AuditEvent{
+            .timestamp = timestamps[start_row],
+            .order_id = 0,
+            .parent_order_id = 0,
+            .asset = -1,
+            .type = AuditEventType::snapshot_loaded,
+            .value = static_cast<double>(initial_snapshot->next_row),
+        });
+        append_ledger(
+            timestamps[start_row], 0, 0, -1, AuditEventType::snapshot_loaded, 0, 0, 0.0, state.cash, state.peak_equity,
+            static_cast<double>(initial_snapshot->next_row)
+        );
+    }
+
+    for (std::size_t row = start_row; row < bounded_end_row; ++row) {
         const bool tradable = tradable_mask.empty() ? true : tradable_mask[row] != 0;
 
-        {
-            double short_notional = 0.0;
-            double gross_notional = 0.0;
-            for (std::size_t col = 0; col < cols; ++col) {
-                const auto idx = offset(row, col, cols);
-                const auto notional = static_cast<double>(positions[col] * config.lot_size) * close[idx];
-                gross_notional += std::abs(notional);
-                if (positions[col] < 0) {
-                    short_notional += std::abs(notional);
-                }
+        double short_notional = 0.0;
+        for (std::size_t col = 0; col < cols; ++col) {
+            const auto idx = offset(row, col, cols);
+            const auto notional = static_cast<double>(state.positions[col] * config.lot_size) * close[idx];
+            if (state.positions[col] < 0) {
+                short_notional += std::abs(notional);
             }
-            const auto borrow_cost = short_notional * annual_bps_to_daily_rate(config.annual_borrow_bps);
-            const auto cash_yield = std::max(0.0, cash) * annual_bps_to_daily_rate(config.annual_cash_yield_bps);
-            cash -= borrow_cost;
-            cash += cash_yield;
-            total_borrow_cost += borrow_cost;
-            total_cash_yield += cash_yield;
         }
+        const auto borrow_cost = short_notional * annual_bps_to_daily_rate(config.annual_borrow_bps);
+        const auto cash_yield = std::max(0.0, state.cash) * annual_bps_to_daily_rate(config.annual_cash_yield_bps);
+        state.cash -= borrow_cost;
+        state.cash += cash_yield;
+        state.total_borrow_cost += borrow_cost;
+        state.total_cash_yield += cash_yield;
 
         if (!tradable && config.cancel_orders_outside_session) {
-            for (auto& order : pending) {
-                if (order.active) {
-                    result.audit_events.push_back(AuditEvent{
-                        .timestamp = timestamps[row],
-                        .order_id = 0,
-                        .parent_order_id = order.parent_order_id,
-                        .asset = -1,
-                        .type = AuditEventType::order_cancelled_session,
-                        .value = 0.0,
-                    });
-                    append_ledger(
-                        timestamps[row],
-                        0,
-                        order.parent_order_id,
-                        -1,
-                        AuditEventType::order_cancelled_session,
-                        0,
-                        order.remaining_quantity,
-                        0.0,
-                        cash,
-                        result.equity_curve[std::max<std::size_t>(0, row == 0 ? 0 : row - 1)],
-                        0.0
-                    );
+            for (auto& order : state.pending) {
+                if (!order.active) {
+                    continue;
                 }
+                result.audit_events.push_back(AuditEvent{
+                    .timestamp = timestamps[row],
+                    .order_id = 0,
+                    .parent_order_id = order.parent_order_id,
+                    .asset = -1,
+                    .type = AuditEventType::order_cancelled_session,
+                    .value = 0.0,
+                });
+                append_ledger(
+                    timestamps[row], 0, order.parent_order_id, -1, AuditEventType::order_cancelled_session,
+                    0, order.remaining_quantity, 0.0, state.cash, 0.0, 0.0
+                );
                 order = PendingOrder{};
             }
         }
 
-        if (tradable && !halted_by_risk) {
+        if (tradable && !state.halted_by_risk) {
             for (std::size_t col = 0; col < cols; ++col) {
                 const auto idx = offset(row, col, cols);
                 const auto requested_target = target_positions[idx];
-                const auto clamped_target = clamp_target(requested_target, config);
+                const auto clamped_target = clamp_target(
+                    requested_target,
+                    config,
+                    asset_max_positions.empty() ? config.max_position : asset_max_positions[col]
+                );
                 if (clamped_target != requested_target) {
-                    ++result.rejected_orders;
+                    ++state.rejected_orders;
                     result.audit_events.push_back(AuditEvent{
                         .timestamp = timestamps[row],
                         .order_id = 0,
@@ -300,20 +427,35 @@ BacktestResult Backtester::run(
                     });
                     append_ledger(
                         timestamps[row], 0, 0, static_cast<std::int64_t>(col), AuditEventType::order_rejected_limit,
-                        requested_target, 0, 0.0, cash, 0.0, static_cast<double>(requested_target)
+                        requested_target, 0, 0.0, state.cash, 0.0, static_cast<double>(requested_target)
                     );
                 }
 
-                if (pending[col].active && pending[col].target_position == clamped_target) {
+                auto& existing = state.pending[col];
+                if (existing.active && existing.target_position == clamped_target) {
                     continue;
                 }
-                if (clamped_target == positions[col]) {
-                    pending[col] = PendingOrder{};
+                if (clamped_target == state.positions[col]) {
+                    if (existing.active) {
+                        result.audit_events.push_back(AuditEvent{
+                            .timestamp = timestamps[row],
+                            .order_id = 0,
+                            .parent_order_id = existing.parent_order_id,
+                            .asset = static_cast<std::int64_t>(col),
+                            .type = AuditEventType::order_cancelled_replace,
+                            .value = 0.0,
+                        });
+                        append_ledger(
+                            timestamps[row], 0, existing.parent_order_id, static_cast<std::int64_t>(col),
+                            AuditEventType::order_cancelled_replace, 0, existing.remaining_quantity, 0.0, state.cash, 0.0, 0.0
+                        );
+                    }
+                    existing = PendingOrder{};
                     continue;
                 }
 
                 const auto gross = gross_exposure_after_fill(
-                    positions,
+                    state.positions,
                     col,
                     clamped_target,
                     close,
@@ -321,10 +463,13 @@ BacktestResult Backtester::run(
                     cols,
                     config.lot_size
                 );
-                const auto equity_base = std::max(1.0, cash);
-                const auto gross_leverage = gross / equity_base;
-                if (gross_leverage > config.max_gross_leverage) {
-                    ++result.rejected_orders;
+                const auto gross_leverage = gross / std::max(1.0, state.cash);
+                const auto projected_notional = std::abs(
+                    static_cast<double>(clamped_target * config.lot_size) * close[idx]
+                );
+                if (gross_leverage > config.max_gross_leverage ||
+                    projected_notional > notional_limit_for_asset(asset_notional_limits, col)) {
+                    ++state.rejected_orders;
                     result.audit_events.push_back(AuditEvent{
                         .timestamp = timestamps[row],
                         .order_id = 0,
@@ -335,54 +480,63 @@ BacktestResult Backtester::run(
                     });
                     append_ledger(
                         timestamps[row], 0, 0, static_cast<std::int64_t>(col), AuditEventType::order_rejected_leverage,
-                        clamped_target - positions[col], clamped_target - positions[col], 0.0, cash, 0.0, gross_leverage
+                        clamped_target - state.positions[col], clamped_target - state.positions[col], 0.0, state.cash, 0.0, gross_leverage
                     );
                     continue;
                 }
 
-                pending[col] = PendingOrder{
-                    .parent_order_id = next_parent_order_id++,
+                if (existing.active) {
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = timestamps[row],
+                        .order_id = 0,
+                        .parent_order_id = existing.parent_order_id,
+                        .asset = static_cast<std::int64_t>(col),
+                        .type = AuditEventType::order_cancelled_replace,
+                        .value = 0.0,
+                    });
+                    append_ledger(
+                        timestamps[row], 0, existing.parent_order_id, static_cast<std::int64_t>(col),
+                        AuditEventType::order_cancelled_replace, 0, existing.remaining_quantity, 0.0, state.cash, 0.0, 0.0
+                    );
+                }
+
+                existing = PendingOrder{
+                    .parent_order_id = state.next_parent_order_id++,
                     .target_position = clamped_target,
-                    .remaining_quantity = clamped_target - positions[col],
+                    .remaining_quantity = clamped_target - state.positions[col],
                     .limit_price = limit_prices[idx],
                     .order_type = static_cast<OrderType>(order_types[idx]),
                     .ready_index = row + static_cast<std::size_t>(std::max<std::int64_t>(0, config.latency_steps)),
                     .active = true,
                 };
-                ++result.submitted_orders;
+                ++state.submitted_orders;
                 result.audit_events.push_back(AuditEvent{
                     .timestamp = timestamps[row],
                     .order_id = 0,
-                    .parent_order_id = pending[col].parent_order_id,
+                    .parent_order_id = existing.parent_order_id,
                     .asset = static_cast<std::int64_t>(col),
                     .type = AuditEventType::order_submitted,
                     .value = static_cast<double>(clamped_target),
                 });
                 append_ledger(
-                    timestamps[row], 0, pending[col].parent_order_id, static_cast<std::int64_t>(col),
-                    AuditEventType::order_submitted, pending[col].remaining_quantity, pending[col].remaining_quantity,
-                    0.0, cash, 0.0, static_cast<double>(clamped_target)
+                    timestamps[row], 0, existing.parent_order_id, static_cast<std::int64_t>(col),
+                    AuditEventType::order_submitted, existing.remaining_quantity, existing.remaining_quantity, 0.0,
+                    state.cash, 0.0, static_cast<double>(clamped_target)
                 );
             }
         }
 
-        if (tradable && !halted_by_risk) {
+        if (tradable && !state.halted_by_risk) {
             for (std::size_t col = 0; col < cols; ++col) {
-                auto& order = pending[col];
+                auto& order = state.pending[col];
                 if (!order.active || order.ready_index > row || order.remaining_quantity == 0) {
                     continue;
                 }
 
                 const auto idx = offset(row, col, cols);
-                const auto high_price = high[idx];
-                const auto low_price = low[idx];
-                const auto close_price = close[idx];
-                const auto bid_price = bid[idx];
-                const auto ask_price = ask[idx];
                 const auto row_volume = volume[idx] > 0.0 ? volume[idx] : config.default_volume;
-
                 if (order.order_type == OrderType::limit &&
-                    !can_fill_limit(order.remaining_quantity, high_price, low_price, order.limit_price)) {
+                    !can_fill_limit(order.remaining_quantity, high[idx], low[idx], order.limit_price)) {
                     continue;
                 }
 
@@ -401,7 +555,7 @@ BacktestResult Backtester::run(
                     });
                     append_ledger(
                         timestamps[row], 0, order.parent_order_id, static_cast<std::int64_t>(col),
-                        AuditEventType::order_waiting_queue, 0, order.remaining_quantity, 0.0, cash, 0.0, venue_capacity
+                        AuditEventType::order_waiting_queue, 0, order.remaining_quantity, 0.0, state.cash, 0.0, venue_capacity
                     );
                     continue;
                 }
@@ -413,30 +567,31 @@ BacktestResult Backtester::run(
                         venue_capacity
                     )))
                 );
-                const auto fill_abs = std::min<std::int64_t>(std::llabs(order.remaining_quantity), max_fill);
-                const auto fill_qty = order.remaining_quantity > 0 ? fill_abs : -fill_abs;
-                const auto participation = std::min(1.0, static_cast<double>(fill_abs) / row_volume);
-                const auto base_price = execution_base_price(
-                    order.order_type,
-                    fill_qty,
-                    close_price,
-                    bid_price,
-                    ask_price,
-                    config.use_bid_ask_execution,
-                    order.limit_price
-                );
+                const auto desired_fill_abs = std::min<std::int64_t>(std::llabs(order.remaining_quantity), max_fill);
+                const auto child_limit = config.child_order_size > 0 ? config.child_order_size : desired_fill_abs;
+                const auto child_fill_abs = std::min<std::int64_t>(desired_fill_abs, child_limit);
+                const auto child_fill_qty = order.remaining_quantity > 0 ? child_fill_abs : -child_fill_abs;
+                const auto participation = std::min(1.0, static_cast<double>(child_fill_abs) / row_volume);
                 const auto exec_price = apply_slippage(
-                    base_price,
-                    fill_qty,
+                    execution_base_price(
+                        order.order_type,
+                        child_fill_qty,
+                        close[idx],
+                        bid[idx],
+                        ask[idx],
+                        config.use_bid_ask_execution,
+                        order.limit_price
+                    ),
+                    child_fill_qty,
                     participation,
-                    config,
-                    config.slippage_model
+                    config
                 );
-                const auto notional = static_cast<double>(fill_abs * config.lot_size) * exec_price;
-                const auto fee = compute_fee(notional, config.commission_bps);
-                const auto projected_cash = cash - static_cast<double>(fill_qty * config.lot_size) * exec_price - fee;
-                if (projected_cash < 0.0 && positions[col] >= 0 && fill_qty > 0) {
-                    ++result.rejected_orders;
+
+                const auto child_notional = static_cast<double>(child_fill_abs * config.lot_size) * exec_price;
+                const auto child_fee = compute_fee(child_notional, config.commission_bps);
+                const auto projected_cash = state.cash - static_cast<double>(child_fill_qty * config.lot_size) * exec_price - child_fee;
+                if (projected_cash < 0.0 && state.positions[col] >= 0 && child_fill_qty > 0) {
+                    ++state.rejected_orders;
                     result.audit_events.push_back(AuditEvent{
                         .timestamp = timestamps[row],
                         .order_id = 0,
@@ -447,26 +602,19 @@ BacktestResult Backtester::run(
                     });
                     append_ledger(
                         timestamps[row], 0, order.parent_order_id, static_cast<std::int64_t>(col),
-                        AuditEventType::order_rejected_cash, fill_qty, order.remaining_quantity, exec_price, cash, 0.0, projected_cash
+                        AuditEventType::order_rejected_cash, child_fill_qty, order.remaining_quantity, exec_price, state.cash, 0.0, projected_cash
                     );
                     order = PendingOrder{};
                     continue;
                 }
 
-                const auto child_limit = config.child_order_size > 0 ? config.child_order_size : std::llabs(fill_qty);
-                const auto child_fill_abs = std::min<std::int64_t>(std::llabs(fill_qty), child_limit);
-                const auto child_fill_qty = fill_qty > 0 ? child_fill_abs : -child_fill_abs;
-                const auto child_notional = static_cast<double>(child_fill_abs * config.lot_size) * exec_price;
-                const auto child_fee = compute_fee(child_notional, config.commission_bps);
-                const auto child_projected_cash = cash - static_cast<double>(child_fill_qty * config.lot_size) * exec_price - child_fee;
-                const auto child_order_id = next_child_order_id++;
-
-                cash = child_projected_cash;
-                positions[col] += child_fill_qty;
+                const auto child_order_id = state.next_child_order_id++;
+                state.cash = projected_cash;
+                state.positions[col] += child_fill_qty;
                 order.remaining_quantity -= child_fill_qty;
-                turnover += child_notional;
-                total_fees += child_fee;
-                ++result.filled_orders;
+                state.turnover += child_notional;
+                state.total_fees += child_fee;
+                ++state.filled_orders;
 
                 result.fills.push_back(Fill{
                     .timestamp = timestamps[row],
@@ -489,36 +637,33 @@ BacktestResult Backtester::run(
                 });
                 append_ledger(
                     timestamps[row], child_order_id, order.parent_order_id, static_cast<std::int64_t>(col),
-                    AuditEventType::fill_applied, child_fill_qty, order.remaining_quantity, exec_price, cash, 0.0, child_fee
+                    AuditEventType::fill_applied, child_fill_qty, order.remaining_quantity, exec_price, state.cash, 0.0, child_fee
                 );
 
-                if (order.remaining_quantity == 0 || positions[col] == order.target_position) {
+                if (order.remaining_quantity == 0 || state.positions[col] == order.target_position) {
                     order = PendingOrder{};
+                } else {
+                    order.ready_index = row + static_cast<std::size_t>(config.child_slice_delay_steps + 1);
                 }
             }
         }
 
-        double equity = cash;
-        if (config.mark_to_market) {
-            for (std::size_t col = 0; col < cols; ++col) {
-                const auto idx = offset(row, col, cols);
-                equity += static_cast<double>(positions[col] * config.lot_size) * close[idx];
-                result.positions[idx] = positions[col];
+        double equity = state.cash;
+        for (std::size_t col = 0; col < cols; ++col) {
+            const auto idx = offset(row, col, cols);
+            if (config.mark_to_market) {
+                equity += static_cast<double>(state.positions[col] * config.lot_size) * close[idx];
             }
-        } else {
-            for (std::size_t col = 0; col < cols; ++col) {
-                const auto idx = offset(row, col, cols);
-                result.positions[idx] = positions[col];
-            }
+            result.positions[idx] = state.positions[col];
         }
 
-        result.cash_curve[row] = cash;
+        result.cash_curve[row] = state.cash;
         result.equity_curve[row] = equity;
-        peak_equity = std::max(peak_equity, equity);
-        const auto drawdown = peak_equity > 0.0 ? (peak_equity - equity) / peak_equity : 0.0;
-        if (drawdown > config.max_drawdown_pct && !halted_by_risk) {
-            halted_by_risk = true;
-            for (auto& order : pending) {
+        state.peak_equity = std::max(state.peak_equity, equity);
+        const auto drawdown = state.peak_equity > 0.0 ? (state.peak_equity - equity) / state.peak_equity : 0.0;
+        if (drawdown > config.max_drawdown_pct && !state.halted_by_risk) {
+            state.halted_by_risk = true;
+            for (auto& order : state.pending) {
                 order = PendingOrder{};
             }
             result.audit_events.push_back(AuditEvent{
@@ -530,7 +675,7 @@ BacktestResult Backtester::run(
                 .value = drawdown,
             });
             append_ledger(
-                timestamps[row], 0, 0, -1, AuditEventType::risk_kill_switch, 0, 0, 0.0, cash, equity, drawdown
+                timestamps[row], 0, 0, -1, AuditEventType::risk_kill_switch, 0, 0, 0.0, state.cash, equity, drawdown
             );
         }
         result.max_drawdown = std::max(result.max_drawdown, drawdown);
@@ -539,15 +684,19 @@ BacktestResult Backtester::run(
         }
     }
 
-    result.ending_cash = cash;
-    result.ending_equity = result.equity_curve.back();
+    result.ending_cash = state.cash;
+    result.ending_equity = bounded_end_row > 0 ? result.equity_curve[bounded_end_row - 1] : state.cash;
     result.pnl = result.ending_equity - config.starting_cash;
-    result.turnover = turnover;
-    result.total_fees = total_fees;
-    result.total_borrow_cost = total_borrow_cost;
-    result.total_cash_yield = total_cash_yield;
-    result.peak_equity = peak_equity;
-    result.halted_by_risk = halted_by_risk;
+    result.turnover = state.turnover;
+    result.total_fees = state.total_fees;
+    result.total_borrow_cost = state.total_borrow_cost;
+    result.total_cash_yield = state.total_cash_yield;
+    result.peak_equity = state.peak_equity;
+    result.submitted_orders = state.submitted_orders;
+    result.filled_orders = state.filled_orders;
+    result.rejected_orders = state.rejected_orders;
+    result.halted_by_risk = state.halted_by_risk;
+    result.snapshot = snapshot_from_state(state, bounded_end_row);
     return result;
 }
 

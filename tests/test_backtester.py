@@ -167,3 +167,20 @@ def test_queue_blocking_prevents_fill_and_audits() -> None:
 
     assert len(result.fills) == 0
     assert any(event.type == nb.AuditEventType.ORDER_WAITING_QUEUE for event in result.audit_events)
+
+
+def test_asset_level_notional_limit_rejects() -> None:
+    result = nb.run_backtest_matrix(
+        timestamps=np.array([1, 2], dtype=np.int64),
+        close=np.array([[100.0, 50.0], [100.0, 50.0]], dtype=np.float64),
+        high=np.array([[100.0, 50.0], [100.0, 50.0]], dtype=np.float64),
+        low=np.array([[100.0, 50.0], [100.0, 50.0]], dtype=np.float64),
+        volume=np.array([[1_000.0, 1_000.0], [1_000.0, 1_000.0]], dtype=np.float64),
+        target_positions=np.array([[3, 1], [3, 1]], dtype=np.int64),
+        asset_max_positions=np.array([5, 5], dtype=np.int64),
+        asset_notional_limits=np.array([200.0, 1_000.0], dtype=np.float64),
+        config=nb.BacktestConfig(max_position=5, slippage_bps=0.0, volume_share_impact=0.0),
+    )
+
+    assert result.rejected_orders >= 1
+    assert any(event.type == nb.AuditEventType.ORDER_REJECTED_LEVERAGE for event in result.audit_events)

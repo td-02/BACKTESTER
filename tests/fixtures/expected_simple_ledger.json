@@ -1,0 +1,46 @@
+[
+  {
+    "sequence": 1,
+    "timestamp": 1,
+    "order_id": 0,
+    "parent_order_id": 1,
+    "asset": 0,
+    "type": "AuditEventType.ORDER_SUBMITTED",
+    "quantity": 1,
+    "remaining_quantity": 1,
+    "price": 0.0
+  },
+  {
+    "sequence": 2,
+    "timestamp": 1,
+    "order_id": 1000000,
+    "parent_order_id": 1,
+    "asset": 0,
+    "type": "AuditEventType.FILL_APPLIED",
+    "quantity": 1,
+    "remaining_quantity": 0,
+    "price": 100.0
+  },
+  {
+    "sequence": 3,
+    "timestamp": 2,
+    "order_id": 0,
+    "parent_order_id": 2,
+    "asset": 0,
+    "type": "AuditEventType.ORDER_SUBMITTED",
+    "quantity": -1,
+    "remaining_quantity": -1,
+    "price": 0.0
+  },
+  {
+    "sequence": 4,
+    "timestamp": 2,
+    "order_id": 1000001,
+    "parent_order_id": 2,
+    "asset": 0,
+    "type": "AuditEventType.FILL_APPLIED",
+    "quantity": -1,
+    "remaining_quantity": 0,
+    "price": 101.0
+  }
+]
