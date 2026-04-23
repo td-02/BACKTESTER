@@ -127,6 +127,28 @@ Measured on this repo with the current `0.2.0` code:
 The isolated run shows the core backtest engine is fast and scales well, while the full pipeline is
 more constrained by Python-side data setup.
 
+## Institutional Reporting
+
+Use the reporting helpers to generate a performance package for a completed run:
+
+```python
+import nanoback as nb
+
+result = nb.run_backtest(...)
+report = nb.summarize_backtest(result, symbols=["AAA"])
+nb.export_performance_report_json(report, "outputs/performance_report.json")
+nb.export_performance_report_markdown(report, "outputs/performance_report.md")
+```
+
+The report includes:
+
+- core PnL, return, drawdown, turnover, and fill-rate metrics
+- equity and cash curve summaries
+- audit-event counts
+- asset-level execution summaries
+
+This is the layer you would use for institutional-style post-trade review and fast root-cause analysis.
+
 ## Status
 
 The repo is strong as a research and simulation engine. It is not a full OMS/EMS, exchange adapter stack, or compliance platform.

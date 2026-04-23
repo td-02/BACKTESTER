@@ -14,6 +14,7 @@ from .ledger import (
     snapshot_to_dict,
 )
 from .profiling import LatencyLogBook, LatencySample, LatencySummary
+from .reporting import PerformanceReport, export_performance_report_json, export_performance_report_markdown, summarize_backtest
 from .strategy import (
     MarketEvent,
     OrderIntent,
@@ -58,6 +59,7 @@ __all__ = [
     "LatencyLogBook",
     "LatencySample",
     "LatencySummary",
+    "PerformanceReport",
     "MarketData",
     "MarketEvent",
     "OrderIntent",
@@ -77,6 +79,9 @@ __all__ = [
     "run_backtest_matrix",
     "run_strategy_backtest",
     "save_snapshot",
+    "export_performance_report_json",
+    "export_performance_report_markdown",
+    "summarize_backtest",
     "weights_to_positions",
     "ReplayState",
     "replay_ledger",
