@@ -94,6 +94,39 @@ print(len(result.ledger))
 .\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --max-seconds 0.50 --min-fills 1000
 ```
 
+The benchmark now writes a latency log book to `outputs/benchmark_engine_latency.jsonl` and checks
+its results against `benchmarks/benchmark_engine_baseline.json`.
+
+Useful flags:
+
+- `--log-book` to change the JSONL output path
+- `--baseline` to compare against a different baseline file
+- `--update-baseline` to refresh the baseline after an intentional change
+- `--regression-factor` to control how much slower a stage may get before failing
+
+## Performance Notes
+
+Measured on this repo with the current `0.2.0` code:
+
+- Standard benchmark, `50_000 x 8`
+  - `elapsed_seconds=0.0609`
+  - `data_generation=0.0324s`
+  - `policy_generation=0.0040s`
+  - `engine_run=0.0246s`
+  - `fills=61033`
+- Heavier simulation, `200_000 x 16`
+  - Full pipeline: `elapsed_seconds=0.5472`
+  - `data_generation=0.2933s`
+  - `policy_generation=0.0762s`
+  - `engine_run=0.1777s`
+- Isolated engine path for the same heavy simulation
+  - `elapsed_seconds=0.2233`
+  - `policy_generation=0.0733s`
+  - `engine_run=0.1499s`
+
+The isolated run shows the core backtest engine is fast and scales well, while the full pipeline is
+more constrained by Python-side data setup.
+
 ## Status
 
 The repo is strong as a research and simulation engine. It is not a full OMS/EMS, exchange adapter stack, or compliance platform.
