@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -12,6 +14,9 @@ def main() -> None:
     parser.add_argument("--max-seconds", type=float, default=0.25)
     parser.add_argument("--min-fills", type=int, default=1_000)
     parser.add_argument("--log-book", type=str, default="outputs/benchmark_engine_latency.jsonl")
+    parser.add_argument("--baseline", type=str, default="benchmarks/benchmark_engine_baseline.json")
+    parser.add_argument("--update-baseline", action="store_true")
+    parser.add_argument("--regression-factor", type=float, default=1.25)
     args = parser.parse_args()
 
     log_book = nb.LatencyLogBook(scenario="benchmark_engine", seed=42)
@@ -86,6 +91,43 @@ def main() -> None:
     print(f"fills={len(result.fills)} pnl={result.pnl:.2f}")
     print(log_book.render_text())
     log_book.write_jsonl(args.log_book)
+
+    baseline_path = Path(args.baseline)
+    current_metrics = {
+        "elapsed_seconds": elapsed,
+        "fills": int(len(result.fills)),
+        "pnl": float(result.pnl),
+        "stages": {stage: summary.total for stage, summary in log_book.stage_summaries().items()},
+    }
+    if args.update_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(current_metrics, indent=2), encoding="utf-8")
+        print(f"updated_baseline={baseline_path}")
+    elif baseline_path.exists():
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline_elapsed = float(baseline["elapsed_seconds"])
+        baseline_fills = int(baseline["fills"])
+        baseline_pnl = float(baseline["pnl"])
+        if elapsed > baseline_elapsed * args.regression_factor:
+            raise SystemExit(
+                f"elapsed_seconds regression: current={elapsed:.6f} baseline={baseline_elapsed:.6f} "
+                f"factor={args.regression_factor:.2f}"
+            )
+        if len(result.fills) != baseline_fills:
+            raise SystemExit(f"fill-count regression: current={len(result.fills)} baseline={baseline_fills}")
+        if abs(float(result.pnl) - baseline_pnl) > 1e-9:
+            raise SystemExit(f"pnl regression: current={float(result.pnl):.12f} baseline={baseline_pnl:.12f}")
+        baseline_stages = {name: float(value) for name, value in baseline.get("stages", {}).items()}
+        for stage, current in current_metrics["stages"].items():
+            baseline_stage = baseline_stages.get(stage)
+            if baseline_stage is None:
+                continue
+            if current > baseline_stage * args.regression_factor:
+                raise SystemExit(
+                    f"stage regression[{stage}]: current={current:.6f} baseline={baseline_stage:.6f} "
+                    f"factor={args.regression_factor:.2f}"
+                )
+        print(f"baseline_check=passed path={baseline_path}")
 
     if elapsed > args.max_seconds:
         raise SystemExit(f"benchmark exceeded threshold: {elapsed:.4f}s > {args.max_seconds:.4f}s")
