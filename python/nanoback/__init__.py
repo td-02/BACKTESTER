@@ -13,6 +13,7 @@ from .ledger import (
     snapshot_from_dict,
     snapshot_to_dict,
 )
+from .profiling import LatencyLogBook, LatencySample, LatencySummary
 from .strategy import (
     MarketEvent,
     OrderIntent,
@@ -54,6 +55,9 @@ __all__ = [
     "export_ledger_jsonl",
     "Fill",
     "LedgerEntry",
+    "LatencyLogBook",
+    "LatencySample",
+    "LatencySummary",
     "MarketData",
     "MarketEvent",
     "OrderIntent",

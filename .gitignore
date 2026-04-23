@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 build/
 dist/
+outputs/
 *.egg-info/
 *.pyd
 *.so
