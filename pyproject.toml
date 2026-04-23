@@ -4,12 +4,18 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "nanoback"
-version = "0.1.1"
+version = "0.2.0"
 description = "C++20 event-driven trading backtester with Python bindings, snapshots, audit ledger, and microstructure-aware execution."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Tapesh Chandra Das" }]
+keywords = ["backtesting", "trading", "latency", "microstructure", "pybind11"]
 dependencies = ["numpy>=1.26"]
+
+[project.urls]
+Homepage = "https://github.com/td-02/BACKTESTER"
+Source = "https://github.com/td-02/BACKTESTER"
+Issues = "https://github.com/td-02/BACKTESTER/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
