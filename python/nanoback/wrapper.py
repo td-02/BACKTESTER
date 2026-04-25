@@ -79,15 +79,21 @@ class PythonBacktestResult:
 
     def __repr__(self) -> str:
         metrics = self.summary()
-        return (
-            "BacktestResult("
-            f"sharpe={metrics.sharpe:.4f}, "
-            f"max_drawdown={metrics.max_drawdown:.4f}, "
-            f"cagr={metrics.cagr:.4f}, "
-            f"turnover_per_year={metrics.turnover_per_year:.4f}, "
-            f"fills={metrics.fill_count}"
-            ")"
-        )
+        rows = [
+            ("Sharpe", metrics.sharpe),
+            ("Max Drawdown", metrics.max_drawdown),
+            ("CAGR", metrics.cagr),
+            ("Turnover/Yr", metrics.turnover_per_year),
+            ("Fill Count", float(metrics.fill_count)),
+        ]
+        lines = ["BacktestResult Summary", "Metric        Value", "------------  -------------"]
+        for label, value in rows:
+            if np.isinf(value):
+                text = "inf" if value > 0 else "-inf"
+            else:
+                text = f"{value:.6f}"
+            lines.append(f"{label:<12}  {text:>13}")
+        return "\n".join(lines)
 
     @property
     def ending_cash(self) -> float:

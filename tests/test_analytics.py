@@ -45,3 +45,21 @@ def test_peak_to_trough_50pct_drawdown() -> None:
     summary = nb.summarize_result(result)
 
     assert summary.max_drawdown == 0.5
+
+
+def test_python_backtest_result_summary_and_repr() -> None:
+    result = nb.run_backtest(
+        timestamps=np.array([1, 2, 3], dtype=np.int64),
+        prices=np.array([100.0, 101.0, 102.0], dtype=np.float64),
+        signals=np.array([1, 1, 0], dtype=np.int64),
+        config=nb.BacktestConfig(max_position=1, slippage_bps=0.0, volume_share_impact=0.0),
+    )
+
+    summary = result.summary()
+    rendered = repr(result)
+    payload = result.to_dict()
+
+    assert summary.fill_count == len(result.fills)
+    assert "Sharpe" in rendered
+    assert "Max Drawdown" in rendered
+    assert "metrics" in payload
