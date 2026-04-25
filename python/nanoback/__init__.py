@@ -34,6 +34,7 @@ from .strategy import (
     run_strategy_backtest,
     weights_to_positions,
 )
+from .tca import aggregate_tca, export_tca_jsonl, fill_quality_score, tca_dataframe
 from .wrapper import run_backtest, run_backtest_matrix
 
 __all__ = [
@@ -84,8 +85,12 @@ __all__ = [
     "save_snapshot",
     "export_performance_report_json",
     "export_performance_report_markdown",
+    "export_tca_jsonl",
+    "aggregate_tca",
+    "fill_quality_score",
     "summarize_backtest",
     "summarize_result",
+    "tca_dataframe",
     "weights_to_positions",
     "equity_curve_from_ledger",
     "ReplayState",
