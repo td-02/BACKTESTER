@@ -1,4 +1,5 @@
 from ._nanoback import AuditEvent, AuditEventType, BacktestConfig, BacktestResult, Backtester, EngineSnapshot, Fill, LedgerEntry, OrderType
+from .analytics import BacktestSummary, EquityCurve, equity_curve_from_ledger, summarize_result
 from .calendar import SessionCalendar
 from .costs import CostCalibration, calibrate_cost_model, calibrate_cost_model_from_csv
 from .data import AssetConfig, MarketData, load_csv, load_parquet
@@ -41,6 +42,7 @@ __all__ = [
     "Backtester",
     "AuditEvent",
     "AuditEventType",
+    "BacktestSummary",
     "AssetConfig",
     "compiled_cross_sectional_momentum_targets",
     "compiled_cross_sectional_rank",
@@ -52,6 +54,7 @@ __all__ = [
     "compiled_volatility_filtered_momentum_targets",
     "CostCalibration",
     "EngineSnapshot",
+    "EquityCurve",
     "export_ledger_csv",
     "export_ledger_jsonl",
     "Fill",
@@ -82,7 +85,9 @@ __all__ = [
     "export_performance_report_json",
     "export_performance_report_markdown",
     "summarize_backtest",
+    "summarize_result",
     "weights_to_positions",
+    "equity_curve_from_ledger",
     "ReplayState",
     "replay_ledger",
     "snapshot_from_dict",

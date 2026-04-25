@@ -6,15 +6,88 @@ from typing import Sequence
 import numpy as np
 
 from ._nanoback import BacktestConfig, EngineSnapshot, OrderType, run_backtest_matrix as _run_backtest_matrix
+from .analytics import BacktestSummary, summarize_result
 
 
 @dataclass(slots=True)
 class PythonBacktestResult:
     raw: object
     symbols: list[str]
+    timestamps: np.ndarray
+    close: np.ndarray
+    bid: np.ndarray
+    ask: np.ndarray
+    volume: np.ndarray
     positions: np.ndarray
     equity_curve: np.ndarray
     cash_curve: np.ndarray
+
+    def summary(self) -> BacktestSummary:
+        return summarize_result(self, symbols=self.symbols)
+
+    def to_dict(self) -> dict[str, object]:
+        summary = self.summary()
+        return {
+            "symbols": list(self.symbols),
+            "timestamps": self.timestamps.tolist(),
+            "equity_curve": self.equity_curve.tolist(),
+            "cash_curve": self.cash_curve.tolist(),
+            "positions": self.positions.tolist(),
+            "metrics": summary.to_dict(),
+            "fills": [
+                {
+                    "timestamp": int(fill.timestamp),
+                    "order_id": int(fill.order_id),
+                    "parent_order_id": int(fill.parent_order_id),
+                    "asset": int(fill.asset),
+                    "price": float(fill.price),
+                    "quantity": int(fill.quantity),
+                    "remaining_quantity": int(fill.remaining_quantity),
+                    "fee": float(fill.fee),
+                    "order_type": str(fill.order_type),
+                }
+                for fill in self.fills
+            ],
+        }
+
+    def to_dataframe(self):
+        try:
+            import pandas as pd
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise RuntimeError("pandas is required for to_dataframe(); install nanoback[io]") from exc
+
+        df = pd.DataFrame(
+            {
+                "timestamp": self.timestamps,
+                "equity": self.equity_curve,
+                "cash": self.cash_curve,
+            }
+        )
+        if self.equity_curve.size > 0:
+            start_equity = float(self.equity_curve[0])
+            pnl = self.equity_curve - start_equity
+            running_peak = np.maximum.accumulate(self.equity_curve)
+            safe_peak = np.where(running_peak == 0.0, 1.0, running_peak)
+            drawdown = (running_peak - self.equity_curve) / safe_peak
+            drawdown[running_peak == 0.0] = 0.0
+            df["pnl"] = pnl
+            df["drawdown"] = drawdown
+        else:
+            df["pnl"] = np.asarray([], dtype=np.float64)
+            df["drawdown"] = np.asarray([], dtype=np.float64)
+        return df
+
+    def __repr__(self) -> str:
+        metrics = self.summary()
+        return (
+            "BacktestResult("
+            f"sharpe={metrics.sharpe:.4f}, "
+            f"max_drawdown={metrics.max_drawdown:.4f}, "
+            f"cagr={metrics.cagr:.4f}, "
+            f"turnover_per_year={metrics.turnover_per_year:.4f}, "
+            f"fills={metrics.fill_count}"
+            ")"
+        )
 
     @property
     def ending_cash(self) -> float:
@@ -170,6 +243,11 @@ def run_backtest_matrix(
     return PythonBacktestResult(
         raw=raw,
         symbols=symbols,
+        timestamps=timestamps.copy(),
+        close=close.copy(),
+        bid=bid.copy(),
+        ask=ask.copy(),
+        volume=volume.copy(),
         positions=np.asarray(raw.positions, dtype=np.int64).reshape(rows, cols),
         equity_curve=np.asarray(raw.equity_curve, dtype=np.float64),
         cash_curve=np.asarray(raw.cash_curve, dtype=np.float64),
