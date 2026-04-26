@@ -1,0 +1,15 @@
+{
+  "timestamp_utc": "2026-04-26T18:29:34.895099+00:00",
+  "version": "0.2.1",
+  "mode": "stress",
+  "rows": 200000,
+  "cols": 16,
+  "elapsed_seconds": 0.5469313999637961,
+  "fills": 493500,
+  "pnl": -77230.51201007888,
+  "stages": {
+    "data_generation": 0.25944799999706447,
+    "policy_generation": 0.07668800000101328,
+    "engine_run": 0.2107953999657184
+  }
+}

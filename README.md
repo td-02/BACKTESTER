@@ -91,11 +91,16 @@ print(len(result.ledger))
 ## Benchmark
 
 ```powershell
-.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --max-seconds 0.50 --min-fills 1000
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode latency
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --baseline benchmarks/benchmark_engine_stress_baseline.json
 ```
 
 The benchmark now writes a latency log book to `outputs/benchmark_engine_latency.jsonl` and checks
 its results against `benchmarks/benchmark_engine_baseline.json`.
+
+To track historical runs by release version, enable:
+
+- `--record-history --history-file benchmarks/benchmark_results_history.jsonl`
 
 Useful flags:
 

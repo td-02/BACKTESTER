@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 import numpy as np
@@ -9,19 +11,60 @@ import numpy as np
 import nanoback as nb
 
 
+MODE_CONFIG = {
+    "latency": {"rows": 50_000, "cols": 8, "max_seconds": 0.50, "min_fills": 1_000},
+    "stress": {"rows": 200_000, "cols": 16, "max_seconds": 2.50, "min_fills": 5_000},
+}
+
+
+def _resolve_version(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    try:
+        return package_version("nanoback")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _append_history(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+        handle.write("\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max-seconds", type=float, default=0.25)
-    parser.add_argument("--min-fills", type=int, default=1_000)
-    parser.add_argument("--log-book", type=str, default="outputs/benchmark_engine_latency.jsonl")
-    parser.add_argument("--baseline", type=str, default="benchmarks/benchmark_engine_baseline.json")
+    parser.add_argument("--mode", choices=sorted(MODE_CONFIG.keys()), default="latency")
+    parser.add_argument("--rows", type=int, default=None)
+    parser.add_argument("--cols", type=int, default=None)
+    parser.add_argument("--max-seconds", type=float, default=None)
+    parser.add_argument("--min-fills", type=int, default=None)
+    parser.add_argument("--log-book", type=str, default=None)
+    parser.add_argument("--baseline", type=str, default=None)
     parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument("--regression-factor", type=float, default=1.25)
+    parser.add_argument("--history-file", type=str, default="benchmarks/benchmark_results_history.jsonl")
+    parser.add_argument("--record-history", action="store_true")
+    parser.add_argument("--version", type=str, default=None)
     args = parser.parse_args()
 
-    log_book = nb.LatencyLogBook(scenario="benchmark_engine", seed=42)
-    rows = 50_000
-    cols = 8
+    mode_defaults = MODE_CONFIG[args.mode]
+    rows = int(args.rows if args.rows is not None else mode_defaults["rows"])
+    cols = int(args.cols if args.cols is not None else mode_defaults["cols"])
+    max_seconds = float(args.max_seconds if args.max_seconds is not None else mode_defaults["max_seconds"])
+    min_fills = int(args.min_fills if args.min_fills is not None else mode_defaults["min_fills"])
+    resolved_version = _resolve_version(args.version)
+
+    log_book_path = args.log_book or f"outputs/benchmark_engine_{args.mode}.jsonl"
+    baseline_default = (
+        "benchmarks/benchmark_engine_baseline.json"
+        if args.mode == "latency"
+        else "benchmarks/benchmark_engine_stress_baseline.json"
+    )
+    baseline_path = Path(args.baseline or baseline_default)
+
+    log_book = nb.LatencyLogBook(scenario=f"benchmark_engine_{args.mode}", seed=42)
     rng = np.random.default_rng(log_book.seed)
     with log_book.timing("data_generation", rows=rows, cols=cols):
         timestamps = np.arange(rows, dtype=np.int64) * 60 + 34_200
@@ -90,10 +133,13 @@ def main() -> None:
     print(f"rows={rows} cols={cols}")
     print(f"fills={len(result.fills)} pnl={result.pnl:.2f}")
     print(log_book.render_text())
-    log_book.write_jsonl(args.log_book)
-
-    baseline_path = Path(args.baseline)
+    log_book.write_jsonl(log_book_path)
     current_metrics = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "version": resolved_version,
+        "mode": args.mode,
+        "rows": rows,
+        "cols": cols,
         "elapsed_seconds": elapsed,
         "fills": int(len(result.fills)),
         "pnl": float(result.pnl),
@@ -129,10 +175,15 @@ def main() -> None:
                 )
         print(f"baseline_check=passed path={baseline_path}")
 
-    if elapsed > args.max_seconds:
-        raise SystemExit(f"benchmark exceeded threshold: {elapsed:.4f}s > {args.max_seconds:.4f}s")
-    if len(result.fills) < args.min_fills:
-        raise SystemExit(f"benchmark produced too few fills: {len(result.fills)} < {args.min_fills}")
+    if elapsed > max_seconds:
+        raise SystemExit(f"benchmark exceeded threshold: {elapsed:.4f}s > {max_seconds:.4f}s")
+    if len(result.fills) < min_fills:
+        raise SystemExit(f"benchmark produced too few fills: {len(result.fills)} < {min_fills}")
+    if args.record_history:
+        history_payload = dict(current_metrics)
+        history_payload["log_book"] = str(log_book_path)
+        _append_history(Path(args.history_file), history_payload)
+        print(f"history_recorded={args.history_file}")
 
 
 if __name__ == "__main__":
