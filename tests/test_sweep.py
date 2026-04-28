@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import nanoback as nb
 
@@ -71,3 +72,25 @@ def test_sweep_oos_columns_present() -> None:
     result = sweep.run(_strategy, {"lookback": [1, 2], "max_position": [1]}, n_jobs=1, oos_data=oos)
     assert "oos_sharpe" in result.rows[0]
     assert "overfit_warning" in result.rows[0]
+
+
+def test_sweep_parallel_fallback_on_executor_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = _data()
+    sweep = nb.Sweep(data)
+
+    class _BrokenExecutor:
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def map(self, *args, **kwargs):
+            raise RuntimeError("pickle failure")
+
+    monkeypatch.setattr("nanoback.sweep.ProcessPoolExecutor", _BrokenExecutor)
+    result = sweep.run(_strategy, {"lookback": [1, 2], "max_position": [1]}, n_jobs=2)
+    assert len(result.rows) == 2

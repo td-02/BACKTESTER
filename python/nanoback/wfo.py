@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Sequence
 
 import numpy as np
@@ -45,12 +45,19 @@ class WFOResult:
     efficiency_ratio: float
 
     def to_dict(self) -> dict[str, Any]:
+        def finite_mean(values: list[float]) -> float:
+            arr = np.asarray(values, dtype=np.float64)
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                return 0.0
+            return float(np.mean(finite))
+
         return {
-            "folds": [fold.__dict__ for fold in self.folds],
+            "folds": [asdict(fold) for fold in self.folds],
             "oos_equity_curve": self.oos_equity_curve.tolist(),
             "efficiency_ratio": self.efficiency_ratio,
-            "mean_is_sharpe": float(np.mean([fold.is_sharpe for fold in self.folds])) if self.folds else 0.0,
-            "mean_oos_sharpe": float(np.mean([fold.oos_sharpe for fold in self.folds])) if self.folds else 0.0,
+            "mean_is_sharpe": finite_mean([fold.is_sharpe for fold in self.folds]) if self.folds else 0.0,
+            "mean_oos_sharpe": finite_mean([fold.oos_sharpe for fold in self.folds]) if self.folds else 0.0,
         }
 
 

@@ -34,6 +34,15 @@ def test_strategy_plugin_loader_and_runner() -> None:
     assert len(result.fills) >= 1
 
 
+def test_strategy_loader_blocks_untrusted_modules_by_default() -> None:
+    try:
+        nb.load_strategy("json:JSONDecoder")
+    except ValueError as exc:
+        assert "refusing to import untrusted strategy module" in str(exc)
+    else:
+        raise AssertionError("expected untrusted module import to be blocked")
+
+
 def test_compiled_policy_runner() -> None:
     data = nb.MarketData(
         timestamps=np.array([1, 2, 3, 4, 5], dtype=np.int64),

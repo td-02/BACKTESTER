@@ -57,3 +57,14 @@ def test_walkforward_efficiency_handles_non_finite_sharpes() -> None:
     mean_oos = float(np.mean(finite_oos)) if finite_oos.size else 0.0
     ratio = mean_oos / mean_is if mean_is != 0.0 else 0.0
     assert np.isfinite(ratio)
+
+
+def test_wfo_to_dict_uses_finite_means() -> None:
+    data = _data()
+    wfo = nb.WalkForward(n_splits=4, train_frac=0.7, anchored=False)
+    result = wfo.run(data, _strategy, {"lookback": [1, 2], "max_position": [1]}, n_jobs=1, compiled=True)
+    result.folds[0].is_sharpe = float("inf")
+    result.folds[0].oos_sharpe = float("nan")
+    payload = result.to_dict()
+    assert np.isfinite(float(payload["mean_is_sharpe"]))
+    assert np.isfinite(float(payload["mean_oos_sharpe"]))

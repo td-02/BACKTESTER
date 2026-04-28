@@ -50,10 +50,21 @@ class Strategy:
         return ()
 
 
-def load_strategy(path: str, **kwargs: object) -> Strategy:
+def load_strategy(
+    path: str,
+    *,
+    allow_untrusted: bool = False,
+    allowed_prefixes: Sequence[str] = ("tests.", "nanoback.", "strategies."),
+    **kwargs: object,
+) -> Strategy:
     if ":" not in path:
         raise ValueError("strategy path must use 'module:ClassName'")
     module_name, class_name = path.split(":", maxsplit=1)
+    if not allow_untrusted and not any(module_name.startswith(prefix) for prefix in allowed_prefixes):
+        raise ValueError(
+            "refusing to import untrusted strategy module. "
+            "Pass allow_untrusted=True to bypass this safeguard."
+        )
     module = importlib.import_module(module_name)
     strategy_cls = getattr(module, class_name)
     instance = strategy_cls(**kwargs)

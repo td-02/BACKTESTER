@@ -120,6 +120,10 @@ class Sweep:
         if effective_jobs == 1:
             rows = [_run_one(task) for task in tasks]
         else:
-            with ProcessPoolExecutor(max_workers=effective_jobs) as pool:
-                rows = list(pool.map(_run_one, tasks))
+            try:
+                with ProcessPoolExecutor(max_workers=effective_jobs) as pool:
+                    rows = list(pool.map(_run_one, tasks))
+            except Exception:
+                # Fallback for non-picklable callables/closures in research notebooks.
+                rows = [_run_one(task) for task in tasks]
         return SweepResult(rows).sorted()
