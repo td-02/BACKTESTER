@@ -14,6 +14,7 @@ from .ledger import (
     snapshot_from_dict,
     snapshot_to_dict,
 )
+from .montecarlo import MonteCarlo, MonteCarloResult
 from .profiling import LatencyLogBook, LatencySample, LatencySummary
 from .reporting import PerformanceReport, export_performance_report_json, export_performance_report_markdown, summarize_backtest
 from .strategy import (
@@ -35,6 +36,8 @@ from .strategy import (
     weights_to_positions,
 )
 from .tca import aggregate_tca, export_tca_jsonl, fill_quality_score, tca_dataframe
+from .sweep import ParamGrid, Sweep, SweepResult
+from .wfo import WFOFold, WFOResult, WalkForward
 from .wrapper import run_backtest, run_backtest_matrix
 
 __all__ = [
@@ -70,6 +73,14 @@ __all__ = [
     "OrderType",
     "SessionCalendar",
     "Strategy",
+    "ParamGrid",
+    "Sweep",
+    "SweepResult",
+    "WalkForward",
+    "WFOFold",
+    "WFOResult",
+    "MonteCarlo",
+    "MonteCarloResult",
     "calibrate_cost_model",
     "calibrate_cost_model_from_csv",
     "generate_target_matrices",
