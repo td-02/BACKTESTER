@@ -137,8 +137,15 @@ class WalkForward:
             )
             folds.append(fold)
 
-        mean_is = float(np.mean([fold.is_sharpe for fold in folds])) if folds else 0.0
-        mean_oos = float(np.mean([fold.oos_sharpe for fold in folds])) if folds else 0.0
+        def _finite_mean(values: list[float]) -> float:
+            arr = np.asarray(values, dtype=np.float64)
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                return 0.0
+            return float(np.mean(finite))
+
+        mean_is = _finite_mean([fold.is_sharpe for fold in folds]) if folds else 0.0
+        mean_oos = _finite_mean([fold.oos_sharpe for fold in folds]) if folds else 0.0
         efficiency = mean_oos / mean_is if mean_is != 0.0 else 0.0
         oos_curve = np.concatenate(oos_equity_parts) if oos_equity_parts else np.empty(0, dtype=np.float64)
         return WFOResult(folds=folds, oos_equity_curve=oos_curve, efficiency_ratio=float(efficiency))
