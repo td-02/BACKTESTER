@@ -15,6 +15,11 @@ MODE_CONFIG = {
     "latency": {"rows": 50_000, "cols": 8, "max_seconds": 0.50, "min_fills": 1_000},
     "stress": {"rows": 200_000, "cols": 16, "max_seconds": 2.50, "min_fills": 5_000},
 }
+PROFILE_THRESHOLDS = {
+    "default": {"latency": 1.0, "stress": 1.0},
+    "large": {"latency": 2.5, "stress": 3.0},
+    "xlarge": {"latency": 5.0, "stress": 6.0},
+}
 
 
 def _resolve_version(explicit: str | None) -> str:
@@ -33,6 +38,17 @@ def _append_history(path: Path, payload: dict[str, object]) -> None:
         handle.write("\n")
 
 
+def _estimate_matrix_memory_bytes(rows: int, cols: int) -> int:
+    # Benchmark builds close/high/low/volume/bid/ask + targets/order/limit intermediates.
+    float64_arrays = 9
+    int64_arrays = 2
+    int8_arrays = 1
+    base = rows * cols
+    raw = base * (float64_arrays * 8 + int64_arrays * 8 + int8_arrays * 1)
+    # Account for transient allocations/copies during numpy transforms and C++ boundary handoff.
+    return int(raw * 2.25)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=sorted(MODE_CONFIG.keys()), default="latency")
@@ -47,14 +63,24 @@ def main() -> None:
     parser.add_argument("--history-file", type=str, default="benchmarks/benchmark_results_history.jsonl")
     parser.add_argument("--record-history", action="store_true")
     parser.add_argument("--version", type=str, default=None)
+    parser.add_argument("--profile", choices=sorted(PROFILE_THRESHOLDS.keys()), default="default")
+    parser.add_argument("--memory-guard-gb", type=float, default=3.5)
     args = parser.parse_args()
 
     mode_defaults = MODE_CONFIG[args.mode]
     rows = int(args.rows if args.rows is not None else mode_defaults["rows"])
     cols = int(args.cols if args.cols is not None else mode_defaults["cols"])
-    max_seconds = float(args.max_seconds if args.max_seconds is not None else mode_defaults["max_seconds"])
+    profile_mult = PROFILE_THRESHOLDS[args.profile][args.mode]
+    default_max_seconds = mode_defaults["max_seconds"] * profile_mult
+    max_seconds = float(args.max_seconds if args.max_seconds is not None else default_max_seconds)
     min_fills = int(args.min_fills if args.min_fills is not None else mode_defaults["min_fills"])
     resolved_version = _resolve_version(args.version)
+    est_gb = _estimate_matrix_memory_bytes(rows, cols) / (1024**3)
+    if est_gb > float(args.memory_guard_gb):
+        raise SystemExit(
+            f"benchmark shape too large for configured memory guard: "
+            f"rows={rows} cols={cols} estimated={est_gb:.2f}GiB guard={args.memory_guard_gb:.2f}GiB"
+        )
 
     log_book_path = args.log_book or f"outputs/benchmark_engine_{args.mode}.jsonl"
     baseline_default = (
@@ -68,11 +94,12 @@ def main() -> None:
     rng = np.random.default_rng(log_book.seed)
     with log_book.timing("data_generation", rows=rows, cols=cols):
         timestamps = np.arange(rows, dtype=np.int64) * 60 + 34_200
-        close = 100.0 + np.cumsum(rng.normal(0.0, 0.1, size=(rows, cols)), axis=0)
-        spread = np.abs(rng.normal(0.15, 0.03, size=(rows, cols)))
+        # float32 generation reduces peak allocation pressure for large stress runs.
+        close = 100.0 + np.cumsum(rng.normal(0.0, 0.1, size=(rows, cols)).astype(np.float32), axis=0)
+        spread = np.abs(rng.normal(0.15, 0.03, size=(rows, cols)).astype(np.float32))
         high = close + spread
         low = close - spread
-        volume = rng.integers(5_000, 20_000, size=(rows, cols)).astype(np.float64)
+        volume = rng.integers(5_000, 20_000, size=(rows, cols)).astype(np.float32)
         bid = close - spread * 0.5
         ask = close + spread * 0.5
         data = nb.MarketData(
@@ -138,6 +165,7 @@ def main() -> None:
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "version": resolved_version,
         "mode": args.mode,
+        "profile": args.profile,
         "rows": rows,
         "cols": cols,
         "elapsed_seconds": elapsed,
@@ -151,6 +179,8 @@ def main() -> None:
         print(f"updated_baseline={baseline_path}")
     elif baseline_path.exists():
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline_rows = int(baseline.get("rows", rows))
+        baseline_cols = int(baseline.get("cols", cols))
         baseline_elapsed = float(baseline["elapsed_seconds"])
         baseline_fills = int(baseline["fills"])
         baseline_pnl = float(baseline["pnl"])
@@ -159,9 +189,10 @@ def main() -> None:
                 f"elapsed_seconds regression: current={elapsed:.6f} baseline={baseline_elapsed:.6f} "
                 f"factor={args.regression_factor:.2f}"
             )
-        if len(result.fills) != baseline_fills:
+        comparable_shape = baseline_rows == rows and baseline_cols == cols
+        if comparable_shape and len(result.fills) != baseline_fills:
             raise SystemExit(f"fill-count regression: current={len(result.fills)} baseline={baseline_fills}")
-        if abs(float(result.pnl) - baseline_pnl) > 1e-9:
+        if comparable_shape and abs(float(result.pnl) - baseline_pnl) > 1e-9:
             raise SystemExit(f"pnl regression: current={float(result.pnl):.12f} baseline={baseline_pnl:.12f}")
         baseline_stages = {name: float(value) for name, value in baseline.get("stages", {}).items()}
         for stage, current in current_metrics["stages"].items():

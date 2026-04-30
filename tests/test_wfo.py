@@ -40,6 +40,21 @@ def test_walkforward_outputs_folds_and_efficiency() -> None:
     assert isinstance(result.efficiency_ratio, float)
 
 
+def test_walkforward_topk_and_subsample_path() -> None:
+    data = _data(rows=200)
+    wfo = nb.WalkForward(n_splits=5, train_frac=0.7, anchored=True)
+    result = wfo.run(
+        data,
+        _strategy,
+        {"lookback": [1, 2, 3, 4], "max_position": [1]},
+        n_jobs=1,
+        compiled=True,
+        train_subsample_step=2,
+        top_k=2,
+    )
+    assert len(result.folds) > 0
+
+
 def test_walkforward_efficiency_handles_non_finite_sharpes() -> None:
     data = _data()
     wfo = nb.WalkForward(n_splits=4, train_frac=0.7, anchored=False)

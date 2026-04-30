@@ -81,22 +81,38 @@ class MonteCarlo:
         n_sims: int,
         method: Literal["shuffle", "block_bootstrap"],
         block_size: int = 20,
+        batch_size: int | None = None,
     ) -> np.ndarray:
         if self.returns.size == 0:
             return np.zeros((n_sims, 0), dtype=np.float64)
         rng = np.random.default_rng(self.seed)
         n = self.returns.size
+        if batch_size is None or batch_size <= 0:
+            batch_size = n_sims
         if method == "shuffle":
-            noise = rng.random((n_sims, n), dtype=np.float64)
-            order = np.argsort(noise, axis=1)
-            return self.returns[order]
+            out = np.empty((n_sims, n), dtype=np.float64)
+            base_idx = np.arange(n, dtype=np.int64)
+            cursor = 0
+            while cursor < n_sims:
+                take = min(batch_size, n_sims - cursor)
+                idx = np.tile(base_idx, (take, 1))
+                idx = rng.permuted(idx, axis=1)
+                out[cursor:cursor + take] = self.returns[idx]
+                cursor += take
+            return out
         if method == "block_bootstrap":
             b = max(1, int(block_size))
             n_blocks = int(np.ceil(n / b))
-            starts = rng.integers(0, max(1, n - b + 1), size=(n_sims, n_blocks))
-            block_idx = starts[..., None] + np.arange(b)[None, None, :]
-            block_idx = np.clip(block_idx, 0, n - 1).reshape(n_sims, n_blocks * b)[:, :n]
-            return self.returns[block_idx]
+            out = np.empty((n_sims, n), dtype=np.float64)
+            cursor = 0
+            while cursor < n_sims:
+                take = min(batch_size, n_sims - cursor)
+                starts = rng.integers(0, max(1, n - b + 1), size=(take, n_blocks))
+                block_idx = starts[..., None] + np.arange(b)[None, None, :]
+                block_idx = np.clip(block_idx, 0, n - 1).reshape(take, n_blocks * b)[:, :n]
+                out[cursor:cursor + take] = self.returns[block_idx]
+                cursor += take
+            return out
         raise ValueError(f"unknown method: {method}")
 
     def run(
@@ -105,8 +121,9 @@ class MonteCarlo:
         n_sims: int = 1_000,
         method: Literal["shuffle", "block_bootstrap"] = "shuffle",
         block_size: int = 20,
+        batch_size: int | None = 1_000,
     ) -> MonteCarloResult:
-        sims = self._simulated_returns(n_sims=n_sims, method=method, block_size=block_size)
+        sims = self._simulated_returns(n_sims=n_sims, method=method, block_size=block_size, batch_size=batch_size)
         if sims.shape[1] == 0:
             zeros = np.zeros(n_sims, dtype=np.float64)
             percentiles = {"p5": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0}

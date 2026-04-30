@@ -105,6 +105,8 @@ class WalkForward:
         *,
         n_jobs: int = -1,
         compiled: bool = False,
+        train_subsample_step: int = 1,
+        top_k: int | None = None,
     ) -> WFOResult:
         windows = self._windows(data.row_count)
         folds: list[WFOFold] = []
@@ -114,9 +116,46 @@ class WalkForward:
             train_data = _slice_market_data(data, train_start, train_end)
             test_data = _slice_market_data(data, test_start, test_end)
 
-            sweep = Sweep(train_data)
+            sweep_data = train_data
+            if train_subsample_step > 1:
+                step = int(train_subsample_step)
+                sweep_data = _slice_market_data(train_data, 0, train_data.row_count)
+                sweep_data = MarketData(
+                    timestamps=sweep_data.timestamps[::step],
+                    close=sweep_data.close[::step],
+                    high=sweep_data.high[::step],
+                    low=sweep_data.low[::step],
+                    volume=sweep_data.volume[::step],
+                    bid=sweep_data.bid[::step],
+                    ask=sweep_data.ask[::step],
+                    symbols=list(sweep_data.symbols),
+                    asset_configs=list(sweep_data.asset_configs),
+                )
+
+            sweep = Sweep(sweep_data)
             sweep_result = sweep.run(strategy, param_grid, n_jobs=n_jobs, compiled=compiled)
-            best = sweep_result.best()
+            if top_k is not None and top_k > 0:
+                candidates = sweep_result.rows[: int(top_k)]
+                filtered_grid_rows: list[dict[str, Any]] = []
+                metric_keys = {
+                    "sharpe", "sortino", "cagr", "max_drawdown", "calmar", "turnover_per_year", "fill_count", "pnl",
+                    "is_sharpe", "is_max_drawdown", "oos_sharpe", "oos_max_drawdown", "overfit_warning"
+                }
+                for row in candidates:
+                    filtered_grid_rows.append({k: v for k, v in row.items() if k not in metric_keys})
+                # Refine winner ranking on full train window with shortlisted params.
+                full_rows: list[dict[str, Any]] = []
+                for params in filtered_grid_rows:
+                    res = strategy(train_data, **params)
+                    summ = summarize_result(res, symbols=train_data.symbols)
+                    row = dict(params)
+                    row["sharpe"] = float(summ.sharpe)
+                    row["max_drawdown"] = float(summ.max_drawdown)
+                    full_rows.append(row)
+                full_rows.sort(key=lambda x: x["sharpe"], reverse=True)
+                best = full_rows[0]
+            else:
+                best = sweep_result.best()
             params = {key: value for key, value in best.items() if key not in {
                 "sharpe", "sortino", "cagr", "max_drawdown", "calmar", "turnover_per_year", "fill_count", "pnl",
                 "is_sharpe", "is_max_drawdown", "oos_sharpe", "oos_max_drawdown", "overfit_warning"
