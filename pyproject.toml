@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "nanoback"
-version = "0.3.2"
+version = "0.4.0"
 description = "C++20 event-driven trading backtester with Python bindings, snapshots, audit ledger, and microstructure-aware execution."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,7 @@ Issues = "https://github.com/td-02/BACKTESTER/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-io = ["pandas>=2.2", "pyarrow>=15.0"]
+io = ["pandas>=2.2", "pyarrow>=15.0", "yfinance>=0.2.40"]
 
 [tool.scikit-build]
 wheel.packages = ["python/nanoback"]
