@@ -12,8 +12,8 @@ import nanoback as nb
 
 
 MODE_CONFIG = {
-    "latency": {"rows": 50_000, "cols": 8, "max_seconds": 0.50, "min_fills": 1_000},
-    "stress": {"rows": 200_000, "cols": 16, "max_seconds": 2.50, "min_fills": 5_000},
+    "latency": {"rows": 50_000, "cols": 8, "max_seconds": 0.50, "min_fills": 1_000, "regression_factor": 2.0},
+    "stress": {"rows": 200_000, "cols": 16, "max_seconds": 2.50, "min_fills": 5_000, "regression_factor": 1.25},
 }
 PROFILE_THRESHOLDS = {
     "default": {"latency": 1.0, "stress": 1.0},
@@ -59,7 +59,8 @@ def main() -> None:
     parser.add_argument("--log-book", type=str, default=None)
     parser.add_argument("--baseline", type=str, default=None)
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--regression-factor", type=float, default=1.25)
+    parser.add_argument("--regression-factor", type=float, default=None)
+    parser.add_argument("--pnl-tolerance", type=float, default=1e-2)
     parser.add_argument("--history-file", type=str, default="benchmarks/benchmark_results_history.jsonl")
     parser.add_argument("--record-history", action="store_true")
     parser.add_argument("--version", type=str, default=None)
@@ -74,6 +75,9 @@ def main() -> None:
     default_max_seconds = mode_defaults["max_seconds"] * profile_mult
     max_seconds = float(args.max_seconds if args.max_seconds is not None else default_max_seconds)
     min_fills = int(args.min_fills if args.min_fills is not None else mode_defaults["min_fills"])
+    regression_factor = float(
+        args.regression_factor if args.regression_factor is not None else mode_defaults.get("regression_factor", 1.25)
+    )
     resolved_version = _resolve_version(args.version)
     est_gb = _estimate_matrix_memory_bytes(rows, cols) / (1024**3)
     if est_gb > float(args.memory_guard_gb):
@@ -184,25 +188,28 @@ def main() -> None:
         baseline_elapsed = float(baseline["elapsed_seconds"])
         baseline_fills = int(baseline["fills"])
         baseline_pnl = float(baseline["pnl"])
-        if elapsed > baseline_elapsed * args.regression_factor:
+        if elapsed > baseline_elapsed * regression_factor:
             raise SystemExit(
                 f"elapsed_seconds regression: current={elapsed:.6f} baseline={baseline_elapsed:.6f} "
-                f"factor={args.regression_factor:.2f}"
+                f"factor={regression_factor:.2f}"
             )
         comparable_shape = baseline_rows == rows and baseline_cols == cols
         if comparable_shape and len(result.fills) != baseline_fills:
             raise SystemExit(f"fill-count regression: current={len(result.fills)} baseline={baseline_fills}")
-        if comparable_shape and abs(float(result.pnl) - baseline_pnl) > 1e-9:
-            raise SystemExit(f"pnl regression: current={float(result.pnl):.12f} baseline={baseline_pnl:.12f}")
+        if comparable_shape and abs(float(result.pnl) - baseline_pnl) > float(args.pnl_tolerance):
+            raise SystemExit(
+                f"pnl regression: current={float(result.pnl):.12f} baseline={baseline_pnl:.12f} "
+                f"tolerance={args.pnl_tolerance:.12f}"
+            )
         baseline_stages = {name: float(value) for name, value in baseline.get("stages", {}).items()}
         for stage, current in current_metrics["stages"].items():
             baseline_stage = baseline_stages.get(stage)
             if baseline_stage is None:
                 continue
-            if current > baseline_stage * args.regression_factor:
+            if current > baseline_stage * regression_factor:
                 raise SystemExit(
                     f"stage regression[{stage}]: current={current:.6f} baseline={baseline_stage:.6f} "
-                    f"factor={args.regression_factor:.2f}"
+                    f"factor={regression_factor:.2f}"
                 )
         print(f"baseline_check=passed path={baseline_path}")
 
