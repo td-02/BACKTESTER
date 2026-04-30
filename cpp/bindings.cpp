@@ -74,6 +74,21 @@ PYBIND11_MODULE(_nanoback, module) {
         .value("FIXED_BPS", SlippageModel::fixed_bps)
         .value("VOLUME_SHARE", SlippageModel::volume_share);
 
+    py::enum_<BacktestConfig::DataMode>(module, "DataMode")
+        .value("BAR", BacktestConfig::DataMode::bar)
+        .value("TICK", BacktestConfig::DataMode::tick);
+
+    py::enum_<CorporateActionType>(module, "CorporateActionType")
+        .value("SPLIT", CorporateActionType::split)
+        .value("DIVIDEND", CorporateActionType::dividend)
+        .value("SPINOFF", CorporateActionType::spinoff)
+        .value("DELISTING", CorporateActionType::delisting);
+
+    py::enum_<TickSide>(module, "TickSide")
+        .value("BID", TickSide::bid)
+        .value("ASK", TickSide::ask)
+        .value("TRADE", TickSide::trade);
+
     py::enum_<AuditEventType>(module, "AuditEventType")
         .value("ORDER_SUBMITTED", AuditEventType::order_submitted)
         .value("ORDER_REJECTED_LIMIT", AuditEventType::order_rejected_limit)
@@ -85,6 +100,21 @@ PYBIND11_MODULE(_nanoback, module) {
         .value("ORDER_WAITING_QUEUE", AuditEventType::order_waiting_queue)
         .value("ORDER_CANCELLED_REPLACE", AuditEventType::order_cancelled_replace)
         .value("SNAPSHOT_LOADED", AuditEventType::snapshot_loaded);
+
+    py::class_<CorporateAction>(module, "CorporateAction")
+        .def(py::init<>())
+        .def_readwrite("asset", &CorporateAction::asset)
+        .def_readwrite("ex_date_timestamp", &CorporateAction::ex_date_timestamp)
+        .def_readwrite("action_type", &CorporateAction::action_type)
+        .def_readwrite("ratio_or_amount", &CorporateAction::ratio_or_amount);
+
+    py::class_<TickEvent>(module, "TickEvent")
+        .def(py::init<>())
+        .def_readwrite("timestamp_ns", &TickEvent::timestamp_ns)
+        .def_readwrite("asset", &TickEvent::asset)
+        .def_readwrite("price", &TickEvent::price)
+        .def_readwrite("size", &TickEvent::size)
+        .def_readwrite("side", &TickEvent::side);
 
     py::class_<BacktestConfig>(module, "BacktestConfig")
         .def(
@@ -179,7 +209,10 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readwrite("allow_short", &BacktestConfig::allow_short)
         .def_readwrite("mark_to_market", &BacktestConfig::mark_to_market)
         .def_readwrite("cancel_orders_outside_session", &BacktestConfig::cancel_orders_outside_session)
-        .def_readwrite("use_bid_ask_execution", &BacktestConfig::use_bid_ask_execution);
+        .def_readwrite("use_bid_ask_execution", &BacktestConfig::use_bid_ask_execution)
+        .def_readwrite("dividend_reinvestment", &BacktestConfig::dividend_reinvestment)
+        .def_readwrite("data_mode", &BacktestConfig::data_mode)
+        .def_readwrite("corporate_actions", &BacktestConfig::corporate_actions);
 
     py::class_<EngineSnapshot>(module, "EngineSnapshot")
         .def(py::init<>())
@@ -255,6 +288,7 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readonly("halted_by_risk", &BacktestResult::halted_by_risk)
         .def_readonly("equity_curve", &BacktestResult::equity_curve)
         .def_readonly("cash_curve", &BacktestResult::cash_curve)
+        .def_readonly("adjustment_factors", &BacktestResult::adjustment_factors)
         .def_property_readonly(
             "positions",
             [](const BacktestResult& self) {
@@ -389,6 +423,49 @@ PYBIND11_MODULE(_nanoback, module) {
         py::arg("snapshot") = py::none(),
         py::arg("start_row") = 0,
         py::arg("end_row") = static_cast<std::size_t>(-1)
+    );
+
+    module.def(
+        "run_backtest_ticks",
+        [](const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamp_ns,
+           const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& asset,
+           const py::array_t<double, py::array::c_style | py::array::forcecast>& price,
+           const py::array_t<double, py::array::c_style | py::array::forcecast>& size,
+           const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& side,
+           const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
+           std::size_t cols,
+           const BacktestConfig& config) {
+            const auto ts = checked_1d_span(timestamp_ns, "timestamp_ns");
+            const auto as = checked_1d_span(asset, "asset");
+            const auto px = checked_1d_span(price, "price");
+            const auto sz = checked_1d_span(size, "size");
+            const auto sd = checked_1d_span(side, "side");
+            const auto tp = checked_1d_span(target_positions, "target_positions");
+            if (ts.size() != as.size() || ts.size() != px.size() || ts.size() != sz.size() || ts.size() != sd.size()) {
+                throw std::invalid_argument("tick arrays must have equal length");
+            }
+            std::vector<TickEvent> ticks;
+            ticks.reserve(ts.size());
+            for (std::size_t i = 0; i < ts.size(); ++i) {
+                ticks.push_back(TickEvent{
+                    .timestamp_ns = ts[i],
+                    .asset = as[i],
+                    .price = px[i],
+                    .size = sz[i],
+                    .side = static_cast<TickSide>(sd[i]),
+                });
+            }
+            Backtester backtester;
+            return backtester.run_ticks(ticks, tp, cols, config);
+        },
+        py::arg("timestamp_ns"),
+        py::arg("asset"),
+        py::arg("price"),
+        py::arg("size"),
+        py::arg("side"),
+        py::arg("target_positions"),
+        py::arg("cols"),
+        py::arg("config") = BacktestConfig{}
     );
 
     py::class_<PolicyEngine>(module, "PolicyEngine")

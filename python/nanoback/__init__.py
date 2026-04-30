@@ -1,4 +1,19 @@
-from ._nanoback import AuditEvent, AuditEventType, BacktestConfig, BacktestResult, Backtester, EngineSnapshot, Fill, LedgerEntry, OrderType
+from ._nanoback import (
+    AuditEvent,
+    AuditEventType,
+    BacktestConfig,
+    BacktestResult,
+    Backtester,
+    CorporateAction,
+    CorporateActionType,
+    DataMode,
+    EngineSnapshot,
+    Fill,
+    LedgerEntry,
+    OrderType,
+    TickEvent,
+    TickSide,
+)
 from .analytics import BacktestSummary, EquityCurve, equity_curve_from_ledger, summarize_result
 from .calendar import SessionCalendar
 from .costs import CostCalibration, calibrate_cost_model, calibrate_cost_model_from_csv
@@ -14,6 +29,7 @@ from .ledger import (
     snapshot_from_dict,
     snapshot_to_dict,
 )
+from .loaders import load_corporate_actions_csv, load_ticks_parquet, load_yahoo_adjusted
 from .montecarlo import MonteCarlo, MonteCarloResult
 from .profiling import LatencyLogBook, LatencySample, LatencySummary
 from .reporting import PerformanceReport, export_performance_report_json, export_performance_report_markdown, summarize_backtest
@@ -38,7 +54,7 @@ from .strategy import (
 from .tca import aggregate_tca, export_tca_jsonl, fill_quality_score, tca_dataframe
 from .sweep import ParamGrid, Sweep, SweepResult
 from .wfo import WFOFold, WFOResult, WalkForward
-from .wrapper import run_backtest, run_backtest_matrix
+from .wrapper import run_backtest, run_backtest_matrix, run_backtest_ticks
 
 __all__ = [
     "BacktestConfig",
@@ -46,6 +62,9 @@ __all__ = [
     "Backtester",
     "AuditEvent",
     "AuditEventType",
+    "CorporateAction",
+    "CorporateActionType",
+    "DataMode",
     "BacktestSummary",
     "AssetConfig",
     "compiled_cross_sectional_momentum_targets",
@@ -71,6 +90,8 @@ __all__ = [
     "MarketEvent",
     "OrderIntent",
     "OrderType",
+    "TickEvent",
+    "TickSide",
     "SessionCalendar",
     "Strategy",
     "ParamGrid",
@@ -92,6 +113,7 @@ __all__ = [
     "run_compiled_policy_backtest",
     "run_backtest",
     "run_backtest_matrix",
+    "run_backtest_ticks",
     "run_strategy_backtest",
     "save_snapshot",
     "export_performance_report_json",
@@ -108,4 +130,7 @@ __all__ = [
     "replay_ledger",
     "snapshot_from_dict",
     "snapshot_to_dict",
+    "load_corporate_actions_csv",
+    "load_ticks_parquet",
+    "load_yahoo_adjusted",
 ]

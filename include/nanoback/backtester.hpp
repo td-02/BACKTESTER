@@ -5,6 +5,9 @@
 #include <span>
 #include <vector>
 
+#include "nanoback/corp_actions.hpp"
+#include "nanoback/tick.hpp"
+
 namespace nanoback {
 
 enum class OrderType : std::int8_t {
@@ -32,6 +35,11 @@ enum class AuditEventType : std::int8_t {
 };
 
 struct BacktestConfig {
+    enum class DataMode : std::int8_t {
+        bar = 0,
+        tick = 1,
+    };
+
     double starting_cash{1'000'000.0};
     double commission_bps{0.0};
     double slippage_bps{0.0};
@@ -54,6 +62,9 @@ struct BacktestConfig {
     bool mark_to_market{true};
     bool cancel_orders_outside_session{true};
     bool use_bid_ask_execution{false};
+    bool dividend_reinvestment{false};
+    DataMode data_mode{DataMode::bar};
+    std::vector<CorporateAction> corporate_actions{};
 };
 
 struct EngineSnapshot {
@@ -134,6 +145,7 @@ struct BacktestResult {
     std::vector<double> equity_curve{};
     std::vector<double> cash_curve{};
     std::vector<std::int64_t> positions{};
+    std::vector<double> adjustment_factors{};
     std::vector<Fill> fills{};
     std::vector<AuditEvent> audit_events{};
     std::vector<LedgerEntry> ledger{};
@@ -162,6 +174,13 @@ public:
         const EngineSnapshot* initial_snapshot = nullptr,
         std::size_t start_row = 0,
         std::size_t end_row = static_cast<std::size_t>(-1)
+    ) const;
+
+    [[nodiscard]] BacktestResult run_ticks(
+        std::span<const TickEvent> ticks,
+        std::span<const std::int64_t> target_positions,
+        std::size_t cols,
+        const BacktestConfig& config
     ) const;
 };
 

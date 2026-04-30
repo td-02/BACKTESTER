@@ -248,6 +248,14 @@ struct RuntimeState {
     return state;
 }
 
+[[nodiscard]] bool has_action_at(
+    const CorporateAction& action,
+    const std::int64_t ts,
+    const std::size_t asset
+) {
+    return action.ex_date_timestamp == ts && action.asset == static_cast<std::int64_t>(asset);
+}
+
 }  // namespace
 
 BacktestResult Backtester::run(
@@ -319,11 +327,13 @@ BacktestResult Backtester::run(
     result.equity_curve.resize(rows);
     result.cash_curve.resize(rows);
     result.positions.resize(matrix_size);
+    result.adjustment_factors.resize(matrix_size, 1.0);
     result.fills.reserve(matrix_size);
     result.audit_events.reserve(matrix_size * 3);
     result.ledger.reserve(matrix_size * 4);
 
     auto state = state_from_snapshot(initial_snapshot, cols, config.starting_cash);
+    std::vector<double> running_adjustment(cols, 1.0);
 
     auto append_ledger = [&](const std::int64_t timestamp,
                              const std::int64_t order_id,
@@ -369,6 +379,58 @@ BacktestResult Backtester::run(
 
     for (std::size_t row = start_row; row < bounded_end_row; ++row) {
         const bool tradable = tradable_mask.empty() ? true : tradable_mask[row] != 0;
+        const auto ts = timestamps[row];
+
+        for (const auto& action : config.corporate_actions) {
+            const auto asset = static_cast<std::size_t>(action.asset);
+            if (asset >= cols || action.ex_date_timestamp != ts) {
+                continue;
+            }
+            const auto idx = offset(row, asset, cols);
+            const auto px = close[idx];
+            if (action.action_type == CorporateActionType::split && action.ratio_or_amount > 0.0) {
+                state.positions[asset] = static_cast<std::int64_t>(
+                    std::llround(static_cast<double>(state.positions[asset]) * action.ratio_or_amount)
+                );
+                running_adjustment[asset] /= action.ratio_or_amount;
+            } else if (action.action_type == CorporateActionType::dividend) {
+                const auto gross = static_cast<double>(state.positions[asset] * config.lot_size) * action.ratio_or_amount;
+                if (config.dividend_reinvestment && gross > 0.0 && px > 0.0) {
+                    const auto add_units = static_cast<std::int64_t>(std::floor(gross / (px * config.lot_size)));
+                    if (add_units > 0) {
+                        state.positions[asset] += add_units;
+                        state.turnover += static_cast<double>(add_units * config.lot_size) * px;
+                    } else {
+                        state.cash += gross;
+                    }
+                } else {
+                    state.cash += gross;
+                }
+            } else if (action.action_type == CorporateActionType::spinoff) {
+                state.cash += static_cast<double>(state.positions[asset] * config.lot_size) * action.ratio_or_amount;
+            } else if (action.action_type == CorporateActionType::delisting) {
+                const auto qty = -state.positions[asset];
+                if (qty != 0) {
+                    const auto notional = static_cast<double>(qty * config.lot_size) * px;
+                    state.cash -= notional;
+                    state.turnover += std::abs(notional);
+                    state.positions[asset] = 0;
+                    for (auto& order : state.pending) {
+                        if (order.active && order.parent_order_id != 0) {
+                            order = PendingOrder{};
+                        }
+                    }
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = ts,
+                        .order_id = 0,
+                        .parent_order_id = 0,
+                        .asset = static_cast<std::int64_t>(asset),
+                        .type = AuditEventType::fill_applied,
+                        .value = px,
+                    });
+                }
+            }
+        }
 
         double short_notional = 0.0;
         for (std::size_t col = 0; col < cols; ++col) {
@@ -655,6 +717,7 @@ BacktestResult Backtester::run(
                 equity += static_cast<double>(state.positions[col] * config.lot_size) * close[idx];
             }
             result.positions[idx] = state.positions[col];
+            result.adjustment_factors[idx] = running_adjustment[col];
         }
 
         result.cash_curve[row] = state.cash;
@@ -698,6 +761,88 @@ BacktestResult Backtester::run(
     result.halted_by_risk = state.halted_by_risk;
     result.snapshot = snapshot_from_state(state, bounded_end_row);
     return result;
+}
+
+BacktestResult Backtester::run_ticks(
+    std::span<const TickEvent> ticks,
+    std::span<const std::int64_t> target_positions,
+    const std::size_t cols,
+    const BacktestConfig& config
+) const {
+    const auto rows = ticks.size();
+    if (rows == 0 || cols == 0) {
+        return BacktestResult{};
+    }
+    if (target_positions.size() != rows * cols) {
+        throw std::invalid_argument("target_positions must match tick rows * cols");
+    }
+
+    std::vector<std::int64_t> timestamps(rows, 0);
+    std::vector<double> close(rows * cols, 0.0);
+    std::vector<double> high(rows * cols, 0.0);
+    std::vector<double> low(rows * cols, 0.0);
+    std::vector<double> volume(rows * cols, config.default_volume);
+    std::vector<double> bid(rows * cols, 0.0);
+    std::vector<double> ask(rows * cols, 0.0);
+    std::vector<std::int8_t> order_types(rows * cols, static_cast<std::int8_t>(OrderType::limit));
+    std::vector<double> limit_prices(rows * cols, std::numeric_limits<double>::quiet_NaN());
+    std::vector<std::uint8_t> tradable_mask(rows, 1);
+    std::vector<std::int64_t> asset_max_positions(cols, config.max_position);
+    std::vector<double> asset_notional_limits(cols, 0.0);
+    std::vector<double> best_bid(cols, 0.0);
+    std::vector<double> best_ask(cols, 0.0);
+
+    for (std::size_t row = 0; row < rows; ++row) {
+        const auto& tick = ticks[row];
+        timestamps[row] = tick.timestamp_ns;
+        if (tick.asset < 0 || static_cast<std::size_t>(tick.asset) >= cols) {
+            continue;
+        }
+        const auto asset = static_cast<std::size_t>(tick.asset);
+        if (tick.side == TickSide::bid) {
+            best_bid[asset] = tick.price;
+        } else if (tick.side == TickSide::ask) {
+            best_ask[asset] = tick.price;
+        }
+
+        for (std::size_t col = 0; col < cols; ++col) {
+            const auto idx = row * cols + col;
+            const auto b = best_bid[col] > 0.0 ? best_bid[col] : tick.price;
+            const auto a = best_ask[col] > 0.0 ? best_ask[col] : tick.price;
+            const auto m = (b > 0.0 && a > 0.0) ? (b + a) * 0.5 : tick.price;
+            close[idx] = m;
+            high[idx] = tick.price;
+            low[idx] = tick.price;
+            bid[idx] = b;
+            ask[idx] = a;
+            volume[idx] = std::max(1.0, tick.size);
+            if (col == asset && tick.side == TickSide::trade) {
+                limit_prices[idx] = tick.price;
+            }
+        }
+    }
+
+    return run(
+        timestamps,
+        close,
+        high,
+        low,
+        volume,
+        bid,
+        ask,
+        target_positions,
+        order_types,
+        limit_prices,
+        tradable_mask,
+        asset_max_positions,
+        asset_notional_limits,
+        rows,
+        cols,
+        config,
+        nullptr,
+        0,
+        rows
+    );
 }
 
 }  // namespace nanoback

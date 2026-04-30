@@ -5,7 +5,13 @@ from typing import Sequence
 
 import numpy as np
 
-from ._nanoback import BacktestConfig, EngineSnapshot, OrderType, run_backtest_matrix as _run_backtest_matrix
+from ._nanoback import (
+    BacktestConfig,
+    EngineSnapshot,
+    OrderType,
+    run_backtest_matrix as _run_backtest_matrix,
+    run_backtest_ticks as _run_backtest_ticks,
+)
 from .analytics import BacktestSummary, summarize_result
 
 
@@ -18,6 +24,7 @@ class PythonBacktestResult:
     bid: np.ndarray
     ask: np.ndarray
     volume: np.ndarray
+    adjustment_factors: np.ndarray
     positions: np.ndarray
     equity_curve: np.ndarray
     cash_curve: np.ndarray
@@ -48,6 +55,7 @@ class PythonBacktestResult:
                 }
                 for fill in self.fills
             ],
+            "adjustment_factors": self.adjustment_factors.tolist(),
         }
 
     def to_dataframe(self):
@@ -257,6 +265,60 @@ def run_backtest_matrix(
         positions=np.asarray(raw.positions, dtype=np.int64).reshape(rows, cols),
         equity_curve=np.asarray(raw.equity_curve, dtype=np.float64),
         cash_curve=np.asarray(raw.cash_curve, dtype=np.float64),
+        adjustment_factors=np.asarray(raw.adjustment_factors, dtype=np.float64).reshape(rows, cols),
+    )
+
+
+def run_backtest_ticks(
+    *,
+    timestamp_ns: np.ndarray,
+    asset: np.ndarray,
+    price: np.ndarray,
+    size: np.ndarray,
+    side: np.ndarray,
+    target_positions: np.ndarray,
+    cols: int,
+    config: BacktestConfig | None = None,
+    symbols: Sequence[str] | None = None,
+) -> PythonBacktestResult:
+    timestamp_ns = np.asarray(timestamp_ns, dtype=np.int64)
+    asset = np.asarray(asset, dtype=np.int64)
+    price = np.asarray(price, dtype=np.float64)
+    size = np.asarray(size, dtype=np.float64)
+    side = np.asarray(side, dtype=np.int8)
+    target_positions = _as_matrix(target_positions, np.int64)
+    rows = timestamp_ns.shape[0]
+    if target_positions.shape != (rows, cols):
+        raise ValueError("target_positions must have shape (len(timestamp_ns), cols)")
+    config = config or BacktestConfig()
+    symbols = list(symbols or [f"asset_{idx}" for idx in range(cols)])
+    raw = _run_backtest_ticks(
+        timestamp_ns=timestamp_ns,
+        asset=asset,
+        price=price,
+        size=size,
+        side=side,
+        target_positions=target_positions.reshape(-1),
+        cols=cols,
+        config=config,
+    )
+    # Reconstruct minimal matrices for downstream analytics.
+    close = np.tile(price.reshape(-1, 1), (1, cols))
+    bid = close.copy()
+    ask = close.copy()
+    volume = np.tile(np.maximum(size, 1.0).reshape(-1, 1), (1, cols))
+    return PythonBacktestResult(
+        raw=raw,
+        symbols=symbols,
+        timestamps=timestamp_ns.copy(),
+        close=close,
+        bid=bid,
+        ask=ask,
+        volume=volume,
+        positions=np.asarray(raw.positions, dtype=np.int64).reshape(rows, cols),
+        equity_curve=np.asarray(raw.equity_curve, dtype=np.float64),
+        cash_curve=np.asarray(raw.cash_curve, dtype=np.float64),
+        adjustment_factors=np.asarray(raw.adjustment_factors, dtype=np.float64).reshape(rows, cols),
     )
 
 
