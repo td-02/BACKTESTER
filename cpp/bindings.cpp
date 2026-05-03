@@ -78,6 +78,18 @@ PYBIND11_MODULE(_nanoback, module) {
         .value("BAR", BacktestConfig::DataMode::bar)
         .value("TICK", BacktestConfig::DataMode::tick);
 
+    py::enum_<BacktestConfig::LatencyDriftModel>(module, "LatencyDriftModel")
+        .value("NONE", BacktestConfig::LatencyDriftModel::none)
+        .value("GBM", BacktestConfig::LatencyDriftModel::gbm)
+        .value("EMPIRICAL", BacktestConfig::LatencyDriftModel::empirical);
+
+    py::enum_<InstrumentType>(module, "InstrumentType")
+        .value("EQUITY", InstrumentType::equity)
+        .value("OPTION_CALL", InstrumentType::option_call)
+        .value("OPTION_PUT", InstrumentType::option_put)
+        .value("FUTURE", InstrumentType::future)
+        .value("FX_FORWARD", InstrumentType::fx_forward);
+
     py::enum_<CorporateActionType>(module, "CorporateActionType")
         .value("SPLIT", CorporateActionType::split)
         .value("DIVIDEND", CorporateActionType::dividend)
@@ -99,7 +111,10 @@ PYBIND11_MODULE(_nanoback, module) {
         .value("RISK_KILL_SWITCH", AuditEventType::risk_kill_switch)
         .value("ORDER_WAITING_QUEUE", AuditEventType::order_waiting_queue)
         .value("ORDER_CANCELLED_REPLACE", AuditEventType::order_cancelled_replace)
-        .value("SNAPSHOT_LOADED", AuditEventType::snapshot_loaded);
+        .value("SNAPSHOT_LOADED", AuditEventType::snapshot_loaded)
+        .value("OPTION_EXPIRY", AuditEventType::option_expiry)
+        .value("FUTURE_ROLL", AuditEventType::future_roll)
+        .value("MARGIN_LIQUIDATION", AuditEventType::margin_liquidation);
 
     py::class_<CorporateAction>(module, "CorporateAction")
         .def(py::init<>())
@@ -115,6 +130,30 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readwrite("price", &TickEvent::price)
         .def_readwrite("size", &TickEvent::size)
         .def_readwrite("side", &TickEvent::side);
+
+    py::class_<Venue>(module, "Venue")
+        .def(py::init<>())
+        .def_readwrite("venue_id", &Venue::venue_id)
+        .def_readwrite("maker_fee_bps", &Venue::maker_fee_bps)
+        .def_readwrite("taker_fee_bps", &Venue::taker_fee_bps)
+        .def_readwrite("one_way_latency_us", &Venue::one_way_latency_us)
+        .def_readwrite("volume_share", &Venue::volume_share)
+        .def_readwrite("fill_probability_curve", &Venue::fill_probability_curve);
+
+    py::class_<Instrument>(module, "Instrument")
+        .def(py::init<>())
+        .def_readwrite("type", &Instrument::type)
+        .def_readwrite("expiry_timestamp", &Instrument::expiry_timestamp)
+        .def_readwrite("strike", &Instrument::strike)
+        .def_readwrite("underlying_asset", &Instrument::underlying_asset)
+        .def_readwrite("margin_ratio", &Instrument::margin_ratio);
+
+    py::class_<FutureRoll>(module, "FutureRoll")
+        .def(py::init<>())
+        .def_readwrite("from_asset", &FutureRoll::from_asset)
+        .def_readwrite("to_asset", &FutureRoll::to_asset)
+        .def_readwrite("roll_timestamp", &FutureRoll::roll_timestamp)
+        .def_readwrite("roll_slippage_bps", &FutureRoll::roll_slippage_bps);
 
     py::class_<BacktestConfig>(module, "BacktestConfig")
         .def(
@@ -212,6 +251,17 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readwrite("use_bid_ask_execution", &BacktestConfig::use_bid_ask_execution)
         .def_readwrite("dividend_reinvestment", &BacktestConfig::dividend_reinvestment)
         .def_readwrite("data_mode", &BacktestConfig::data_mode)
+        .def_readwrite("signal_to_order_latency_us", &BacktestConfig::signal_to_order_latency_us)
+        .def_readwrite("order_to_fill_latency_us", &BacktestConfig::order_to_fill_latency_us)
+        .def_readwrite("stochastic_latency", &BacktestConfig::stochastic_latency)
+        .def_readwrite("latency_jitter_sigma", &BacktestConfig::latency_jitter_sigma)
+        .def_readwrite("latency_drift_model", &BacktestConfig::latency_drift_model)
+        .def_readwrite("adverse_velocity_threshold", &BacktestConfig::adverse_velocity_threshold)
+        .def_readwrite("adverse_selection_penalty_bps", &BacktestConfig::adverse_selection_penalty_bps)
+        .def_readwrite("margin_limit", &BacktestConfig::margin_limit)
+        .def_readwrite("venues", &BacktestConfig::venues)
+        .def_readwrite("instruments", &BacktestConfig::instruments)
+        .def_readwrite("future_rolls", &BacktestConfig::future_rolls)
         .def_readwrite("corporate_actions", &BacktestConfig::corporate_actions);
 
     py::class_<EngineSnapshot>(module, "EngineSnapshot")
@@ -248,6 +298,11 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readonly("quantity", &Fill::quantity)
         .def_readonly("remaining_quantity", &Fill::remaining_quantity)
         .def_readonly("fee", &Fill::fee)
+        .def_readonly("venue_id", &Fill::venue_id)
+        .def_readonly("gross_price", &Fill::gross_price)
+        .def_readonly("maker_fee_bps", &Fill::maker_fee_bps)
+        .def_readonly("taker_fee_bps", &Fill::taker_fee_bps)
+        .def_readonly("net_price", &Fill::net_price)
         .def_readonly("order_type", &Fill::order_type);
 
     py::class_<AuditEvent>(module, "AuditEvent")

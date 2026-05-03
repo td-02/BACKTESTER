@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -256,6 +257,58 @@ struct RuntimeState {
     return action.ex_date_timestamp == ts && action.asset == static_cast<std::int64_t>(asset);
 }
 
+[[nodiscard]] const std::vector<Venue>& effective_venues(const BacktestConfig& config) {
+    if (!config.venues.empty()) {
+        return config.venues;
+    }
+    static const std::vector<Venue> fallback{Venue{}};
+    return fallback;
+}
+
+[[nodiscard]] double venue_fill_probability(const Venue& venue, double queue_ahead_fraction) {
+    if (venue.fill_probability_curve.empty()) {
+        return 1.0;
+    }
+    const auto idx = static_cast<std::size_t>(
+        std::clamp<int>(
+            static_cast<int>(std::floor(queue_ahead_fraction * static_cast<double>(venue.fill_probability_curve.size() - 1))),
+            0,
+            static_cast<int>(venue.fill_probability_curve.size() - 1)
+        )
+    );
+    return std::clamp(venue.fill_probability_curve[idx], 0.0, 1.0);
+}
+
+[[nodiscard]] double apply_latency_penalty(
+    const BacktestConfig& config,
+    const double base_price,
+    const std::int64_t signed_quantity,
+    const double volatility_proxy,
+    std::mt19937_64& rng
+) {
+    const auto total_latency_us = config.signal_to_order_latency_us + config.order_to_fill_latency_us;
+    if (total_latency_us <= 0 && config.adverse_selection_penalty_bps == 0.0) {
+        return base_price;
+    }
+    double latency_us = static_cast<double>(total_latency_us);
+    if (config.stochastic_latency && config.latency_jitter_sigma > 0.0) {
+        std::lognormal_distribution<double> ln(std::log(std::max(1.0, latency_us)), config.latency_jitter_sigma);
+        latency_us = ln(rng);
+    }
+    const double dt_days = latency_us / (1e6 * 60.0 * 60.0 * 24.0);
+    const double side = signed_quantity >= 0 ? 1.0 : -1.0;
+    double out = base_price;
+    if (config.latency_drift_model == BacktestConfig::LatencyDriftModel::gbm && volatility_proxy > 0.0) {
+        out = base_price * std::exp(side * std::abs(volatility_proxy) * std::sqrt(std::max(dt_days, 0.0)));
+    } else if (config.latency_drift_model == BacktestConfig::LatencyDriftModel::empirical && volatility_proxy > 0.0) {
+        out = base_price * (1.0 + side * std::abs(volatility_proxy) * std::sqrt(std::max(dt_days, 0.0)));
+    }
+    if (config.adverse_velocity_threshold > 0.0 && std::abs(volatility_proxy) > config.adverse_velocity_threshold) {
+        out *= (1.0 + side * config.adverse_selection_penalty_bps * 1e-4);
+    }
+    return out;
+}
+
 }  // namespace
 
 BacktestResult Backtester::run(
@@ -334,6 +387,7 @@ BacktestResult Backtester::run(
 
     auto state = state_from_snapshot(initial_snapshot, cols, config.starting_cash);
     std::vector<double> running_adjustment(cols, 1.0);
+    std::mt19937_64 rng(42);
 
     auto append_ledger = [&](const std::int64_t timestamp,
                              const std::int64_t order_id,
@@ -380,6 +434,37 @@ BacktestResult Backtester::run(
     for (std::size_t row = start_row; row < bounded_end_row; ++row) {
         const bool tradable = tradable_mask.empty() ? true : tradable_mask[row] != 0;
         const auto ts = timestamps[row];
+
+        for (const auto& roll : config.future_rolls) {
+            if (roll.roll_timestamp != ts) {
+                continue;
+            }
+            if (roll.from_asset < 0 || roll.to_asset < 0 ||
+                static_cast<std::size_t>(roll.from_asset) >= cols ||
+                static_cast<std::size_t>(roll.to_asset) >= cols) {
+                continue;
+            }
+            const auto from = static_cast<std::size_t>(roll.from_asset);
+            const auto to = static_cast<std::size_t>(roll.to_asset);
+            const auto qty = state.positions[from];
+            if (qty != 0) {
+                const auto from_px = close[offset(row, from, cols)];
+                const auto to_px = close[offset(row, to, cols)];
+                state.positions[from] = 0;
+                state.positions[to] += qty;
+                const auto slippage = std::abs(static_cast<double>(qty * config.lot_size) * to_px) * roll.roll_slippage_bps * 1e-4;
+                state.cash -= slippage;
+                state.total_fees += slippage;
+                result.audit_events.push_back(AuditEvent{
+                    .timestamp = ts,
+                    .order_id = 0,
+                    .parent_order_id = 0,
+                    .asset = static_cast<std::int64_t>(to),
+                    .type = AuditEventType::future_roll,
+                    .value = slippage,
+                });
+            }
+        }
 
         for (const auto& action : config.corporate_actions) {
             const auto asset = static_cast<std::size_t>(action.asset);
@@ -446,6 +531,42 @@ BacktestResult Backtester::run(
         state.cash += cash_yield;
         state.total_borrow_cost += borrow_cost;
         state.total_cash_yield += cash_yield;
+
+        for (std::size_t col = 0; col < cols; ++col) {
+            if (col >= config.instruments.size()) {
+                continue;
+            }
+            const auto& instr = config.instruments[col];
+            if ((instr.type == InstrumentType::option_call || instr.type == InstrumentType::option_put) &&
+                instr.expiry_timestamp == ts) {
+                const auto qty = state.positions[col];
+                if (qty == 0) {
+                    continue;
+                }
+                double intrinsic = 0.0;
+                const auto underlying = instr.underlying_asset >= 0 ? static_cast<std::size_t>(instr.underlying_asset) : col;
+                if (underlying >= cols) {
+                    continue;
+                }
+                const auto u_px = close[offset(row, underlying, cols)];
+                if (instr.type == InstrumentType::option_call) {
+                    intrinsic = std::max(0.0, u_px - instr.strike);
+                } else {
+                    intrinsic = std::max(0.0, instr.strike - u_px);
+                }
+                const auto settle = intrinsic * static_cast<double>(qty * config.lot_size);
+                state.cash += settle;
+                state.positions[col] = 0;
+                result.audit_events.push_back(AuditEvent{
+                    .timestamp = ts,
+                    .order_id = 0,
+                    .parent_order_id = 0,
+                    .asset = static_cast<std::int64_t>(col),
+                    .type = AuditEventType::option_expiry,
+                    .value = settle,
+                });
+            }
+        }
 
         if (!tradable && config.cancel_orders_outside_session) {
             for (auto& order : state.pending) {
@@ -634,7 +755,7 @@ BacktestResult Backtester::run(
                 const auto child_fill_abs = std::min<std::int64_t>(desired_fill_abs, child_limit);
                 const auto child_fill_qty = order.remaining_quantity > 0 ? child_fill_abs : -child_fill_abs;
                 const auto participation = std::min(1.0, static_cast<double>(child_fill_abs) / row_volume);
-                const auto exec_price = apply_slippage(
+                const auto base_exec_price = apply_slippage(
                     execution_base_price(
                         order.order_type,
                         child_fill_qty,
@@ -648,10 +769,80 @@ BacktestResult Backtester::run(
                     participation,
                     config
                 );
+                const auto vol_proxy = (high[idx] > 0.0) ? std::abs(high[idx] - low[idx]) / high[idx] : 0.0;
+                const auto latency_exec_price = apply_latency_penalty(config, base_exec_price, child_fill_qty, vol_proxy, rng);
 
-                const auto child_notional = static_cast<double>(child_fill_abs * config.lot_size) * exec_price;
-                const auto child_fee = compute_fee(child_notional, config.commission_bps);
-                const auto projected_cash = state.cash - static_cast<double>(child_fill_qty * config.lot_size) * exec_price - child_fee;
+                const auto& venues = effective_venues(config);
+                auto remaining = std::llabs(child_fill_qty);
+                std::int64_t total_signed_executed = 0;
+                std::int64_t total_abs_executed = 0;
+                double total_notional = 0.0;
+                double total_fees = 0.0;
+
+                for (std::size_t venue_idx = 0; venue_idx < venues.size() && remaining > 0; ++venue_idx) {
+                    const auto& venue = venues[venue_idx];
+                    const double share = std::max(0.0, venue.volume_share);
+                    std::int64_t venue_abs = venue_idx + 1 == venues.size()
+                        ? remaining
+                        : static_cast<std::int64_t>(std::floor(static_cast<double>(child_fill_abs) * share));
+                    venue_abs = std::clamp<std::int64_t>(venue_abs, 0, remaining);
+                    if (venue_abs == 0) {
+                        continue;
+                    }
+                    const auto fill_prob = venue_fill_probability(venue, config.queue_ahead_fraction);
+                    venue_abs = static_cast<std::int64_t>(std::floor(static_cast<double>(venue_abs) * fill_prob));
+                    if (venue_abs <= 0) {
+                        continue;
+                    }
+                    const auto venue_signed = child_fill_qty > 0 ? venue_abs : -venue_abs;
+                    const auto venue_notional = static_cast<double>(venue_abs * config.lot_size) * latency_exec_price;
+                    const auto venue_commission = compute_fee(venue_notional, config.commission_bps);
+                    const auto venue_taker = venue_notional * venue.taker_fee_bps * 1e-4;
+                    const auto venue_maker = venue_notional * venue.maker_fee_bps * 1e-4;
+                    const auto venue_fee = venue_commission + venue_taker - venue_maker;
+
+                    const auto venue_order_id = state.next_child_order_id++;
+                    result.fills.push_back(Fill{
+                        .timestamp = timestamps[row],
+                        .order_id = venue_order_id,
+                        .parent_order_id = order.parent_order_id,
+                        .asset = static_cast<std::int64_t>(col),
+                        .price = latency_exec_price,
+                        .quantity = venue_signed,
+                        .remaining_quantity = order.remaining_quantity - venue_signed,
+                        .fee = venue_fee,
+                        .venue_id = venue.venue_id,
+                        .gross_price = base_exec_price,
+                        .maker_fee_bps = venue.maker_fee_bps,
+                        .taker_fee_bps = venue.taker_fee_bps,
+                        .net_price = latency_exec_price + (venue_fee / std::max(1.0, static_cast<double>(venue_abs * config.lot_size))),
+                        .order_type = order.order_type,
+                    });
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = timestamps[row],
+                        .order_id = venue_order_id,
+                        .parent_order_id = order.parent_order_id,
+                        .asset = static_cast<std::int64_t>(col),
+                        .type = AuditEventType::fill_applied,
+                        .value = latency_exec_price,
+                    });
+                    append_ledger(
+                        timestamps[row], venue_order_id, order.parent_order_id, static_cast<std::int64_t>(col),
+                        AuditEventType::fill_applied, venue_signed, order.remaining_quantity - venue_signed,
+                        latency_exec_price, state.cash, 0.0, venue_fee
+                    );
+
+                    remaining -= venue_abs;
+                    total_abs_executed += venue_abs;
+                    total_signed_executed += venue_signed;
+                    total_notional += venue_notional;
+                    total_fees += venue_fee;
+                }
+
+                if (total_abs_executed == 0) {
+                    continue;
+                }
+                const auto projected_cash = state.cash - static_cast<double>(total_signed_executed * config.lot_size) * latency_exec_price - total_fees;
                 if (projected_cash < 0.0 && state.positions[col] >= 0 && child_fill_qty > 0) {
                     ++state.rejected_orders;
                     result.audit_events.push_back(AuditEvent{
@@ -664,43 +855,18 @@ BacktestResult Backtester::run(
                     });
                     append_ledger(
                         timestamps[row], 0, order.parent_order_id, static_cast<std::int64_t>(col),
-                        AuditEventType::order_rejected_cash, child_fill_qty, order.remaining_quantity, exec_price, state.cash, 0.0, projected_cash
+                        AuditEventType::order_rejected_cash, child_fill_qty, order.remaining_quantity, latency_exec_price, state.cash, 0.0, projected_cash
                     );
                     order = PendingOrder{};
                     continue;
                 }
 
-                const auto child_order_id = state.next_child_order_id++;
                 state.cash = projected_cash;
-                state.positions[col] += child_fill_qty;
-                order.remaining_quantity -= child_fill_qty;
-                state.turnover += child_notional;
-                state.total_fees += child_fee;
+                state.positions[col] += total_signed_executed;
+                order.remaining_quantity -= total_signed_executed;
+                state.turnover += total_notional;
+                state.total_fees += total_fees;
                 ++state.filled_orders;
-
-                result.fills.push_back(Fill{
-                    .timestamp = timestamps[row],
-                    .order_id = child_order_id,
-                    .parent_order_id = order.parent_order_id,
-                    .asset = static_cast<std::int64_t>(col),
-                    .price = exec_price,
-                    .quantity = child_fill_qty,
-                    .remaining_quantity = order.remaining_quantity,
-                    .fee = child_fee,
-                    .order_type = order.order_type,
-                });
-                result.audit_events.push_back(AuditEvent{
-                    .timestamp = timestamps[row],
-                    .order_id = child_order_id,
-                    .parent_order_id = order.parent_order_id,
-                    .asset = static_cast<std::int64_t>(col),
-                    .type = AuditEventType::fill_applied,
-                    .value = exec_price,
-                });
-                append_ledger(
-                    timestamps[row], child_order_id, order.parent_order_id, static_cast<std::int64_t>(col),
-                    AuditEventType::fill_applied, child_fill_qty, order.remaining_quantity, exec_price, state.cash, 0.0, child_fee
-                );
 
                 if (order.remaining_quantity == 0 || state.positions[col] == order.target_position) {
                     order = PendingOrder{};
@@ -718,6 +884,54 @@ BacktestResult Backtester::run(
             }
             result.positions[idx] = state.positions[col];
             result.adjustment_factors[idx] = running_adjustment[col];
+        }
+
+        if (config.margin_limit > 0.0) {
+            auto margin_used = 0.0;
+            for (std::size_t col = 0; col < cols; ++col) {
+                const auto idx = offset(row, col, cols);
+                double ratio = 1.0;
+                if (col < config.instruments.size() && config.instruments[col].margin_ratio > 0.0) {
+                    ratio = config.instruments[col].margin_ratio;
+                }
+                margin_used += std::abs(static_cast<double>(state.positions[col] * config.lot_size) * close[idx]) * ratio;
+            }
+            while (margin_used > config.margin_limit) {
+                std::size_t victim = cols;
+                double victim_notional = std::numeric_limits<double>::infinity();
+                for (std::size_t col = 0; col < cols; ++col) {
+                    const auto idx = offset(row, col, cols);
+                    const auto notion = std::abs(static_cast<double>(state.positions[col] * config.lot_size) * close[idx]);
+                    if (state.positions[col] != 0 && notion < victim_notional) {
+                        victim = col;
+                        victim_notional = notion;
+                    }
+                }
+                if (victim == cols) {
+                    break;
+                }
+                const auto idx = offset(row, victim, cols);
+                const auto qty = -state.positions[victim];
+                state.cash -= static_cast<double>(qty * config.lot_size) * close[idx];
+                state.positions[victim] = 0;
+                result.audit_events.push_back(AuditEvent{
+                    .timestamp = ts,
+                    .order_id = 0,
+                    .parent_order_id = 0,
+                    .asset = static_cast<std::int64_t>(victim),
+                    .type = AuditEventType::margin_liquidation,
+                    .value = victim_notional,
+                });
+                margin_used = 0.0;
+                for (std::size_t col = 0; col < cols; ++col) {
+                    const auto i2 = offset(row, col, cols);
+                    double ratio = 1.0;
+                    if (col < config.instruments.size() && config.instruments[col].margin_ratio > 0.0) {
+                        ratio = config.instruments[col].margin_ratio;
+                    }
+                    margin_used += std::abs(static_cast<double>(state.positions[col] * config.lot_size) * close[i2]) * ratio;
+                }
+            }
         }
 
         result.cash_curve[row] = state.cash;

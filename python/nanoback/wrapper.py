@@ -51,6 +51,11 @@ class PythonBacktestResult:
                     "quantity": int(fill.quantity),
                     "remaining_quantity": int(fill.remaining_quantity),
                     "fee": float(fill.fee),
+                    "venue_id": int(getattr(fill, "venue_id", 0)),
+                    "gross_price": float(getattr(fill, "gross_price", fill.price)),
+                    "maker_fee_bps": float(getattr(fill, "maker_fee_bps", 0.0)),
+                    "taker_fee_bps": float(getattr(fill, "taker_fee_bps", 0.0)),
+                    "net_price": float(getattr(fill, "net_price", fill.price)),
                     "order_type": str(fill.order_type),
                 }
                 for fill in self.fills

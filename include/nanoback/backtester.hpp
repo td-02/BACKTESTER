@@ -6,7 +6,9 @@
 #include <vector>
 
 #include "nanoback/corp_actions.hpp"
+#include "nanoback/instrument.hpp"
 #include "nanoback/tick.hpp"
+#include "nanoback/venue.hpp"
 
 namespace nanoback {
 
@@ -32,12 +34,20 @@ enum class AuditEventType : std::int8_t {
     order_waiting_queue = 7,
     order_cancelled_replace = 8,
     snapshot_loaded = 9,
+    option_expiry = 10,
+    future_roll = 11,
+    margin_liquidation = 12,
 };
 
 struct BacktestConfig {
     enum class DataMode : std::int8_t {
         bar = 0,
         tick = 1,
+    };
+    enum class LatencyDriftModel : std::int8_t {
+        none = 0,
+        gbm = 1,
+        empirical = 2,
     };
 
     double starting_cash{1'000'000.0};
@@ -64,6 +74,17 @@ struct BacktestConfig {
     bool use_bid_ask_execution{false};
     bool dividend_reinvestment{false};
     DataMode data_mode{DataMode::bar};
+    std::int64_t signal_to_order_latency_us{0};
+    std::int64_t order_to_fill_latency_us{0};
+    bool stochastic_latency{false};
+    double latency_jitter_sigma{0.0};
+    LatencyDriftModel latency_drift_model{LatencyDriftModel::none};
+    double adverse_velocity_threshold{0.0};
+    double adverse_selection_penalty_bps{0.0};
+    double margin_limit{0.0};
+    std::vector<Venue> venues{};
+    std::vector<Instrument> instruments{};
+    std::vector<FutureRoll> future_rolls{};
     std::vector<CorporateAction> corporate_actions{};
 };
 
@@ -101,6 +122,11 @@ struct Fill {
     std::int64_t quantity{0};
     std::int64_t remaining_quantity{0};
     double fee{0.0};
+    std::int64_t venue_id{0};
+    double gross_price{0.0};
+    double maker_fee_bps{0.0};
+    double taker_fee_bps{0.0};
+    double net_price{0.0};
     OrderType order_type{OrderType::market};
 };
 
