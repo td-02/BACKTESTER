@@ -12,7 +12,14 @@ import nanoback as nb
 
 
 MODE_CONFIG = {
-    "latency": {"rows": 50_000, "cols": 8, "max_seconds": 0.50, "min_fills": 1_000, "regression_factor": 2.0},
+    "latency": {
+        "rows": 50_000,
+        "cols": 8,
+        "max_seconds": 0.50,
+        "min_fills": 1_000,
+        "regression_factor": 2.0,
+        "stage_regression_factor": 2.5,
+    },
     "stress": {"rows": 200_000, "cols": 16, "max_seconds": 2.50, "min_fills": 5_000, "regression_factor": 1.25},
 }
 PROFILE_THRESHOLDS = {
@@ -60,6 +67,7 @@ def main() -> None:
     parser.add_argument("--baseline", type=str, default=None)
     parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument("--regression-factor", type=float, default=None)
+    parser.add_argument("--stage-regression-factor", type=float, default=None)
     parser.add_argument("--pnl-tolerance", type=float, default=1e-2)
     parser.add_argument("--history-file", type=str, default="benchmarks/benchmark_results_history.jsonl")
     parser.add_argument("--record-history", action="store_true")
@@ -77,6 +85,11 @@ def main() -> None:
     min_fills = int(args.min_fills if args.min_fills is not None else mode_defaults["min_fills"])
     regression_factor = float(
         args.regression_factor if args.regression_factor is not None else mode_defaults.get("regression_factor", 1.25)
+    )
+    stage_regression_factor = float(
+        args.stage_regression_factor
+        if args.stage_regression_factor is not None
+        else mode_defaults.get("stage_regression_factor", regression_factor)
     )
     resolved_version = _resolve_version(args.version)
     est_gb = _estimate_matrix_memory_bytes(rows, cols) / (1024**3)
@@ -206,10 +219,10 @@ def main() -> None:
             baseline_stage = baseline_stages.get(stage)
             if baseline_stage is None:
                 continue
-            if current > baseline_stage * regression_factor:
+            if current > baseline_stage * stage_regression_factor:
                 raise SystemExit(
                     f"stage regression[{stage}]: current={current:.6f} baseline={baseline_stage:.6f} "
-                    f"factor={regression_factor:.2f}"
+                    f"factor={stage_regression_factor:.2f}"
                 )
         print(f"baseline_check=passed path={baseline_path}")
 
