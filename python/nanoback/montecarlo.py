@@ -82,38 +82,29 @@ class MonteCarlo:
         method: Literal["shuffle", "block_bootstrap"],
         block_size: int = 20,
         batch_size: int | None = None,
-    ) -> np.ndarray:
-        if self.returns.size == 0:
-            return np.zeros((n_sims, 0), dtype=np.float64)
+    ) -> tuple[np.ndarray, ...]:
         rng = np.random.default_rng(self.seed)
         n = self.returns.size
         if batch_size is None or batch_size <= 0:
             batch_size = n_sims
-        if method == "shuffle":
-            out = np.empty((n_sims, n), dtype=np.float64)
-            base_idx = np.arange(n, dtype=np.int64)
-            cursor = 0
-            while cursor < n_sims:
-                take = min(batch_size, n_sims - cursor)
+        cursor = 0
+        base_idx = np.arange(n, dtype=np.int64)
+        while cursor < n_sims:
+            take = min(batch_size, n_sims - cursor)
+            if method == "shuffle":
                 idx = np.tile(base_idx, (take, 1))
                 idx = rng.permuted(idx, axis=1)
-                out[cursor:cursor + take] = self.returns[idx]
-                cursor += take
-            return out
-        if method == "block_bootstrap":
-            b = max(1, int(block_size))
-            n_blocks = int(np.ceil(n / b))
-            out = np.empty((n_sims, n), dtype=np.float64)
-            cursor = 0
-            while cursor < n_sims:
-                take = min(batch_size, n_sims - cursor)
+                yield self.returns[idx]
+            elif method == "block_bootstrap":
+                b = max(1, int(block_size))
+                n_blocks = int(np.ceil(n / b))
                 starts = rng.integers(0, max(1, n - b + 1), size=(take, n_blocks))
                 block_idx = starts[..., None] + np.arange(b)[None, None, :]
                 block_idx = np.clip(block_idx, 0, n - 1).reshape(take, n_blocks * b)[:, :n]
-                out[cursor:cursor + take] = self.returns[block_idx]
-                cursor += take
-            return out
-        raise ValueError(f"unknown method: {method}")
+                yield self.returns[block_idx]
+            else:
+                raise ValueError(f"unknown method: {method}")
+            cursor += take
 
     def run(
         self,
@@ -123,18 +114,23 @@ class MonteCarlo:
         block_size: int = 20,
         batch_size: int | None = 1_000,
     ) -> MonteCarloResult:
-        sims = self._simulated_returns(n_sims=n_sims, method=method, block_size=block_size, batch_size=batch_size)
-        if sims.shape[1] == 0:
+        if self.returns.size == 0:
             zeros = np.zeros(n_sims, dtype=np.float64)
             percentiles = {"p5": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0}
             return MonteCarloResult(zeros, zeros, zeros, percentiles, percentiles, percentiles, 1.0)
-
-        equity = np.cumprod(1.0 + sims, axis=1)
-        equity = np.concatenate([np.ones((n_sims, 1), dtype=np.float64), equity], axis=1)
-        sharpe = _sharpe(sims)
-        mdd = _drawdown(equity)
-        years = sims.shape[1] / 252.0
-        cagr = _cagr(equity, years)
+        sharpe_parts: list[np.ndarray] = []
+        mdd_parts: list[np.ndarray] = []
+        cagr_parts: list[np.ndarray] = []
+        years = self.returns.size / 252.0
+        for sims in self._simulated_returns(n_sims=n_sims, method=method, block_size=block_size, batch_size=batch_size):
+            equity = np.cumprod(1.0 + sims, axis=1)
+            equity = np.concatenate([np.ones((sims.shape[0], 1), dtype=np.float64), equity], axis=1)
+            sharpe_parts.append(_sharpe(sims))
+            mdd_parts.append(_drawdown(equity))
+            cagr_parts.append(_cagr(equity, years))
+        sharpe = np.concatenate(sharpe_parts) if sharpe_parts else np.zeros(n_sims, dtype=np.float64)
+        mdd = np.concatenate(mdd_parts) if mdd_parts else np.zeros(n_sims, dtype=np.float64)
+        cagr = np.concatenate(cagr_parts) if cagr_parts else np.zeros(n_sims, dtype=np.float64)
 
         base_sharpe = float(_sharpe(self.returns.reshape(1, -1))[0]) if self.returns.size else 0.0
         p_proxy = float(np.mean(sharpe > base_sharpe))
