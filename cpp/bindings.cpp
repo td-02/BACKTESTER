@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,6 +30,27 @@ template <typename T>
 }
 
 template <typename T>
+[[nodiscard]] std::span<const T> checked_1d_buffer(
+    const py::buffer& buffer,
+    const char* name
+) {
+    const auto info = buffer.request();
+    if (info.ndim != 1) {
+        throw std::invalid_argument(std::string{name} + " must be a 1D buffer");
+    }
+    if (info.itemsize != static_cast<py::ssize_t>(sizeof(T))) {
+        throw std::invalid_argument(std::string{name} + " has unexpected dtype size");
+    }
+    if (info.format != py::format_descriptor<T>::format()) {
+        throw std::invalid_argument(std::string{name} + " has unexpected dtype");
+    }
+    if (info.strides.empty() || info.strides[0] != static_cast<py::ssize_t>(sizeof(T))) {
+        throw std::invalid_argument(std::string{name} + " must be contiguous");
+    }
+    return {static_cast<const T*>(info.ptr), static_cast<std::size_t>(info.shape[0])};
+}
+
+template <typename T>
 struct MatrixView {
     std::span<const T> values;
     std::size_t rows{0};
@@ -50,6 +72,36 @@ template <typename T>
         },
         .rows = static_cast<std::size_t>(array.shape(0)),
         .cols = static_cast<std::size_t>(array.shape(1)),
+    };
+}
+
+template <typename T>
+[[nodiscard]] MatrixView<T> checked_2d_buffer(
+    const py::buffer& buffer,
+    const char* name
+) {
+    const auto info = buffer.request();
+    if (info.ndim != 2) {
+        throw std::invalid_argument(std::string{name} + " must be a 2D buffer");
+    }
+    if (info.itemsize != static_cast<py::ssize_t>(sizeof(T))) {
+        throw std::invalid_argument(std::string{name} + " has unexpected dtype size");
+    }
+    if (info.format != py::format_descriptor<T>::format()) {
+        throw std::invalid_argument(std::string{name} + " has unexpected dtype");
+    }
+    if (info.strides.size() != 2 ||
+        info.strides[1] != static_cast<py::ssize_t>(sizeof(T)) ||
+        info.strides[0] != static_cast<py::ssize_t>(sizeof(T) * info.shape[1])) {
+        throw std::invalid_argument(std::string{name} + " must be C-contiguous");
+    }
+    return MatrixView<T>{
+        .values = {
+            static_cast<const T*>(info.ptr),
+            static_cast<std::size_t>(info.shape[0] * info.shape[1])
+        },
+        .rows = static_cast<std::size_t>(info.shape[0]),
+        .cols = static_cast<std::size_t>(info.shape[1]),
     };
 }
 
@@ -360,36 +412,36 @@ PYBIND11_MODULE(_nanoback, module) {
         .def_readonly("snapshot", &BacktestResult::snapshot);
 
     auto run_impl = [](const Backtester& self,
-                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
-                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
-                       const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
-                       const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
-                       const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& asset_max_positions,
-                       const py::array_t<double, py::array::c_style | py::array::forcecast>& asset_notional_limits,
+                       const py::buffer& timestamps,
+                       const py::buffer& close,
+                       const py::buffer& high,
+                       const py::buffer& low,
+                       const py::buffer& volume,
+                       const py::buffer& bid,
+                       const py::buffer& ask,
+                       const py::buffer& target_positions,
+                       const py::buffer& order_types,
+                       const py::buffer& limit_prices,
+                       const py::buffer& tradable_mask,
+                       const py::buffer& asset_max_positions,
+                       const py::buffer& asset_notional_limits,
                        const BacktestConfig& config,
                        py::object snapshot_obj,
                        std::size_t start_row,
                        std::size_t end_row) {
-        const auto ts_view = checked_1d_span(timestamps, "timestamps");
-        const auto close_view = checked_2d_matrix(close, "close");
-        const auto high_view = checked_2d_matrix(high, "high");
-        const auto low_view = checked_2d_matrix(low, "low");
-        const auto volume_view = checked_2d_matrix(volume, "volume");
-        const auto bid_view = checked_2d_matrix(bid, "bid");
-        const auto ask_view = checked_2d_matrix(ask, "ask");
-        const auto target_view = checked_2d_matrix(target_positions, "target_positions");
-        const auto type_view = checked_2d_matrix(order_types, "order_types");
-        const auto limit_view = checked_2d_matrix(limit_prices, "limit_prices");
-        const auto tradable_view = checked_1d_span(tradable_mask, "tradable_mask");
-        const auto asset_max_view = checked_1d_span(asset_max_positions, "asset_max_positions");
-        const auto asset_notional_view = checked_1d_span(asset_notional_limits, "asset_notional_limits");
+        const auto ts_view = checked_1d_buffer<std::int64_t>(timestamps, "timestamps");
+        const auto close_view = checked_2d_buffer<double>(close, "close");
+        const auto high_view = checked_2d_buffer<double>(high, "high");
+        const auto low_view = checked_2d_buffer<double>(low, "low");
+        const auto volume_view = checked_2d_buffer<double>(volume, "volume");
+        const auto bid_view = checked_2d_buffer<double>(bid, "bid");
+        const auto ask_view = checked_2d_buffer<double>(ask, "ask");
+        const auto target_view = checked_2d_buffer<std::int64_t>(target_positions, "target_positions");
+        const auto type_view = checked_2d_buffer<std::int8_t>(order_types, "order_types");
+        const auto limit_view = checked_2d_buffer<double>(limit_prices, "limit_prices");
+        const auto tradable_view = checked_1d_buffer<std::uint8_t>(tradable_mask, "tradable_mask");
+        const auto asset_max_view = checked_1d_buffer<std::int64_t>(asset_max_positions, "asset_max_positions");
+        const auto asset_notional_view = checked_1d_buffer<double>(asset_notional_limits, "asset_notional_limits");
         const EngineSnapshot* snapshot = snapshot_obj.is_none() ? nullptr : &snapshot_obj.cast<const EngineSnapshot&>();
 
         return self.run(
@@ -441,19 +493,19 @@ PYBIND11_MODULE(_nanoback, module) {
 
     module.def(
         "run_backtest_matrix",
-        [run_impl](const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& timestamps,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& close,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& high,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& low,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& volume,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& bid,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& ask,
-                   const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& target_positions,
-                   const py::array_t<std::int8_t, py::array::c_style | py::array::forcecast>& order_types,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& limit_prices,
-                   const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& tradable_mask,
-                   const py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>& asset_max_positions,
-                   const py::array_t<double, py::array::c_style | py::array::forcecast>& asset_notional_limits,
+        [run_impl](const py::buffer& timestamps,
+                   const py::buffer& close,
+                   const py::buffer& high,
+                   const py::buffer& low,
+                   const py::buffer& volume,
+                   const py::buffer& bid,
+                   const py::buffer& ask,
+                   const py::buffer& target_positions,
+                   const py::buffer& order_types,
+                   const py::buffer& limit_prices,
+                   const py::buffer& tradable_mask,
+                   const py::buffer& asset_max_positions,
+                   const py::buffer& asset_notional_limits,
                    const BacktestConfig& config,
                    py::object snapshot,
                    std::size_t start_row,
@@ -521,6 +573,24 @@ PYBIND11_MODULE(_nanoback, module) {
         py::arg("target_positions"),
         py::arg("cols"),
         py::arg("config") = BacktestConfig{}
+    );
+
+    module.def(
+        "buffer_matrix_view",
+        [](const py::buffer& matrix) {
+            const auto info = matrix.request();
+            if (info.ndim != 2) {
+                throw std::invalid_argument("matrix must be 2D");
+            }
+            return py::memoryview::from_buffer(
+                info.ptr,
+                info.itemsize,
+                info.format.c_str(),
+                {info.shape[0], info.shape[1]},
+                {info.strides[0], info.strides[1]}
+            );
+        },
+        py::arg("matrix")
     );
 
     py::class_<PolicyEngine>(module, "PolicyEngine")

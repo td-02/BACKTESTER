@@ -216,7 +216,7 @@ def run_backtest_matrix(
     start_row: int = 0,
     end_row: int | None = None,
 ) -> PythonBacktestResult:
-    timestamps = np.asarray(timestamps, dtype=np.int64)
+    timestamps = np.ascontiguousarray(np.asarray(timestamps, dtype=np.int64))
     close = _as_matrix(close, np.float64)
     rows, cols = close.shape
     high = close if high is None else _as_matrix(high, np.float64)
@@ -233,7 +233,11 @@ def run_backtest_matrix(
         np.full((rows, cols), np.nan, dtype=np.float64)
         if limit_prices is None else _as_matrix(limit_prices, np.float64)
     )
-    tradable_mask = np.ones(rows, dtype=np.uint8) if tradable_mask is None else np.asarray(tradable_mask, dtype=np.uint8)
+    tradable_mask = (
+        np.ones(rows, dtype=np.uint8)
+        if tradable_mask is None
+        else np.ascontiguousarray(np.asarray(tradable_mask, dtype=np.uint8))
+    )
     asset_max_positions = _as_vector(asset_max_positions, np.int64, cols, 0)
     asset_notional_limits = _as_vector(asset_notional_limits, np.float64, cols, 0.0)
     config = config or BacktestConfig()
