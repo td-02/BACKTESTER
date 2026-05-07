@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-import time
+import queue
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,8 @@ class PaperBroker:
         feed: FeedAdapter,
         ledger_path: str | Path | None = None,
         reconcile_callback: Callable[[dict[str, int], int], object] | None = None,
+        async_ledger_flush: bool = True,
+        ledger_queue_size: int = 1_000_000,
     ) -> None:
         self.symbols = list(symbols)
         if not self.symbols:
@@ -54,6 +57,8 @@ class PaperBroker:
         self.feed = feed
         self.ledger_path = Path(ledger_path) if ledger_path else None
         self.reconcile_callback = reconcile_callback
+        self.async_ledger_flush = bool(async_ledger_flush)
+        self.ledger_queue_size = max(1, int(ledger_queue_size))
 
         self.snapshot: EngineSnapshot | None = None
         self._latest_price = np.full(len(self.symbols), np.nan, dtype=np.float64)
@@ -64,6 +69,11 @@ class PaperBroker:
         self.results: list[PythonBacktestResult] = []
         self.fills = []
         self.ledger = []
+        self._ledger_writer = (
+            _AsyncLedgerWriter(self.ledger_path, queue_size=self.ledger_queue_size)
+            if self.ledger_path is not None and self.async_ledger_flush
+            else None
+        )
 
     @property
     def positions(self) -> dict[str, int]:
@@ -146,6 +156,9 @@ class PaperBroker:
         self.results.append(result)
         self.fills.extend(result.fills)
         self.ledger.extend(result.ledger)
+        if self._ledger_writer is not None:
+            for entry in result.ledger:
+                self._ledger_writer.push(entry)
         return result
 
     def _resolve_targets(self, tick: PaperTick, latest_close: np.ndarray) -> np.ndarray:
@@ -168,11 +181,60 @@ class PaperBroker:
         return arr
 
     def flush_ledger(self) -> None:
+        if self._ledger_writer is not None:
+            self._ledger_writer.close()
+            return
         if self.ledger_path is None:
             return
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         with self.ledger_path.open("w", encoding="utf-8") as handle:
             for entry in self.ledger:
+                handle.write(
+                    json.dumps(
+                        {
+                            "sequence": int(entry.sequence),
+                            "timestamp": int(entry.timestamp),
+                            "order_id": int(entry.order_id),
+                            "parent_order_id": int(entry.parent_order_id),
+                            "asset": int(entry.asset),
+                            "type": int(entry.type),
+                            "quantity": int(entry.quantity),
+                            "remaining_quantity": int(entry.remaining_quantity),
+                            "price": float(entry.price),
+                            "cash_after": float(entry.cash_after),
+                            "equity_after": float(entry.equity_after),
+                            "value": float(entry.value),
+                        }
+                    )
+                    + "\n"
+                )
+
+
+class _AsyncLedgerWriter:
+    def __init__(self, path: Path, queue_size: int) -> None:
+        self.path = path
+        self._queue: queue.Queue[object | None] = queue.Queue(maxsize=queue_size)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def push(self, entry: object) -> None:
+        try:
+            self._queue.put_nowait(entry)
+        except queue.Full:
+            self._queue.put(entry)
+
+    def close(self) -> None:
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as handle:
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    break
+                entry = item
                 handle.write(
                     json.dumps(
                         {
