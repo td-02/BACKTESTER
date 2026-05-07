@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,7 +42,22 @@ template <typename T>
     if (info.itemsize != static_cast<py::ssize_t>(sizeof(T))) {
         throw std::invalid_argument(std::string{name} + " has unexpected dtype size");
     }
-    if (info.format != py::format_descriptor<T>::format()) {
+    const auto format_ok = [&]() -> bool {
+        if (info.format == py::format_descriptor<T>::format()) {
+            return true;
+        }
+        if constexpr (std::is_same_v<T, std::int64_t>) {
+            return info.format == "l" || info.format == "q";
+        }
+        if constexpr (std::is_same_v<T, std::int8_t>) {
+            return info.format == "b";
+        }
+        if constexpr (std::is_same_v<T, std::uint8_t>) {
+            return info.format == "B";
+        }
+        return false;
+    }();
+    if (!format_ok) {
         throw std::invalid_argument(std::string{name} + " has unexpected dtype");
     }
     if (info.strides.empty() || info.strides[0] != static_cast<py::ssize_t>(sizeof(T))) {
@@ -87,7 +103,22 @@ template <typename T>
     if (info.itemsize != static_cast<py::ssize_t>(sizeof(T))) {
         throw std::invalid_argument(std::string{name} + " has unexpected dtype size");
     }
-    if (info.format != py::format_descriptor<T>::format()) {
+    const auto format_ok = [&]() -> bool {
+        if (info.format == py::format_descriptor<T>::format()) {
+            return true;
+        }
+        if constexpr (std::is_same_v<T, std::int64_t>) {
+            return info.format == "l" || info.format == "q";
+        }
+        if constexpr (std::is_same_v<T, std::int8_t>) {
+            return info.format == "b";
+        }
+        if constexpr (std::is_same_v<T, std::uint8_t>) {
+            return info.format == "B";
+        }
+        return false;
+    }();
+    if (!format_ok) {
         throw std::invalid_argument(std::string{name} + " has unexpected dtype");
     }
     if (info.strides.size() != 2 ||
