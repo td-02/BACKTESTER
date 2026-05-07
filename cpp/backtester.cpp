@@ -42,6 +42,57 @@ struct RuntimeState {
     std::vector<PendingOrder> pending{};
 };
 
+struct ChildOrderScratch {
+    std::int64_t order_id{0};
+    std::int64_t parent_order_id{0};
+    std::int64_t asset{0};
+    std::int64_t quantity{0};
+    std::int64_t remaining_quantity{0};
+    std::int64_t venue_id{0};
+    double base_price{0.0};
+    double exec_price{0.0};
+    double fee{0.0};
+    double maker_fee_bps{0.0};
+    double taker_fee_bps{0.0};
+    OrderType order_type{OrderType::market};
+};
+
+class ChildOrderPool {
+public:
+    explicit ChildOrderPool(const std::size_t capacity)
+        : storage_(capacity), free_indices_(capacity) {
+        for (std::size_t idx = 0; idx < capacity; ++idx) {
+            free_indices_[idx] = capacity - idx - 1;
+        }
+    }
+
+    [[nodiscard]] ChildOrderScratch* acquire() {
+        if (free_indices_.empty()) {
+            return nullptr;
+        }
+        const auto idx = free_indices_.back();
+        free_indices_.pop_back();
+        auto& slot = storage_[idx];
+        slot = ChildOrderScratch{};
+        return &slot;
+    }
+
+    void release(ChildOrderScratch* slot) {
+        if (slot == nullptr) {
+            return;
+        }
+        const auto idx = static_cast<std::size_t>(slot - storage_.data());
+        if (idx >= storage_.size()) {
+            return;
+        }
+        free_indices_.push_back(idx);
+    }
+
+private:
+    std::vector<ChildOrderScratch> storage_;
+    std::vector<std::size_t> free_indices_;
+};
+
 [[nodiscard]] std::size_t offset(
     const std::size_t row,
     const std::size_t col,
@@ -386,6 +437,9 @@ BacktestResult Backtester::run(
     result.ledger.reserve(matrix_size * 4);
 
     auto state = state_from_snapshot(initial_snapshot, cols, config.starting_cash);
+    const auto max_pos_abs = static_cast<std::size_t>(std::max<std::int64_t>(1, std::llabs(config.max_position)));
+    const auto pool_capacity = std::max<std::size_t>(cols, max_pos_abs * cols * 10);
+    ChildOrderPool child_order_pool(pool_capacity);
     std::vector<double> running_adjustment(cols, 1.0);
     std::mt19937_64 rng(42);
 
@@ -802,35 +856,52 @@ BacktestResult Backtester::run(
                     const auto venue_fee = venue_commission + venue_taker - venue_maker;
 
                     const auto venue_order_id = state.next_child_order_id++;
+                    auto* scratch = child_order_pool.acquire();
+                    if (scratch == nullptr) {
+                        throw std::runtime_error("child order pool exhausted");
+                    }
+                    scratch->order_id = venue_order_id;
+                    scratch->parent_order_id = order.parent_order_id;
+                    scratch->asset = static_cast<std::int64_t>(col);
+                    scratch->quantity = venue_signed;
+                    scratch->remaining_quantity = order.remaining_quantity - venue_signed;
+                    scratch->venue_id = venue.venue_id;
+                    scratch->base_price = base_exec_price;
+                    scratch->exec_price = latency_exec_price;
+                    scratch->fee = venue_fee;
+                    scratch->maker_fee_bps = venue.maker_fee_bps;
+                    scratch->taker_fee_bps = venue.taker_fee_bps;
+                    scratch->order_type = order.order_type;
                     result.fills.push_back(Fill{
                         .timestamp = timestamps[row],
-                        .order_id = venue_order_id,
-                        .parent_order_id = order.parent_order_id,
-                        .asset = static_cast<std::int64_t>(col),
-                        .price = latency_exec_price,
-                        .quantity = venue_signed,
-                        .remaining_quantity = order.remaining_quantity - venue_signed,
-                        .fee = venue_fee,
-                        .venue_id = venue.venue_id,
-                        .gross_price = base_exec_price,
-                        .maker_fee_bps = venue.maker_fee_bps,
-                        .taker_fee_bps = venue.taker_fee_bps,
-                        .net_price = latency_exec_price + (venue_fee / std::max(1.0, static_cast<double>(venue_abs * config.lot_size))),
-                        .order_type = order.order_type,
+                        .order_id = scratch->order_id,
+                        .parent_order_id = scratch->parent_order_id,
+                        .asset = scratch->asset,
+                        .price = scratch->exec_price,
+                        .quantity = scratch->quantity,
+                        .remaining_quantity = scratch->remaining_quantity,
+                        .fee = scratch->fee,
+                        .venue_id = scratch->venue_id,
+                        .gross_price = scratch->base_price,
+                        .maker_fee_bps = scratch->maker_fee_bps,
+                        .taker_fee_bps = scratch->taker_fee_bps,
+                        .net_price = scratch->exec_price + (scratch->fee / std::max(1.0, static_cast<double>(venue_abs * config.lot_size))),
+                        .order_type = scratch->order_type,
                     });
                     result.audit_events.push_back(AuditEvent{
                         .timestamp = timestamps[row],
-                        .order_id = venue_order_id,
-                        .parent_order_id = order.parent_order_id,
-                        .asset = static_cast<std::int64_t>(col),
+                        .order_id = scratch->order_id,
+                        .parent_order_id = scratch->parent_order_id,
+                        .asset = scratch->asset,
                         .type = AuditEventType::fill_applied,
-                        .value = latency_exec_price,
+                        .value = scratch->exec_price,
                     });
                     append_ledger(
-                        timestamps[row], venue_order_id, order.parent_order_id, static_cast<std::int64_t>(col),
+                        timestamps[row], scratch->order_id, scratch->parent_order_id, scratch->asset,
                         AuditEventType::fill_applied, venue_signed, order.remaining_quantity - venue_signed,
-                        latency_exec_price, state.cash, 0.0, venue_fee
+                        scratch->exec_price, state.cash, 0.0, scratch->fee
                     );
+                    child_order_pool.release(scratch);
 
                     remaining -= venue_abs;
                     total_abs_executed += venue_abs;
