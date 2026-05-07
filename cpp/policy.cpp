@@ -2,9 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <execution>
 #include <numeric>
-#include <utility>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace nanoback {
@@ -55,6 +56,17 @@ void validate_dimensions(
     return (current / previous) - 1.0;
 }
 
+template <typename Func>
+void for_each_index(const std::size_t count, Func&& fn) {
+    std::vector<std::size_t> indices(count);
+    std::iota(indices.begin(), indices.end(), static_cast<std::size_t>(0));
+#ifdef NANOBACK_USE_PAR_STL
+    std::for_each(std::execution::par_unseq, indices.begin(), indices.end(), std::forward<Func>(fn));
+#else
+    std::for_each(indices.begin(), indices.end(), std::forward<Func>(fn));
+#endif
+}
+
 }  // namespace
 
 std::vector<double> PolicyEngine::rolling_volatility(
@@ -69,7 +81,7 @@ std::vector<double> PolicyEngine::rolling_volatility(
     }
 
     std::vector<double> volatility(rows * cols, 0.0);
-    for (std::size_t col = 0; col < cols; ++col) {
+    for_each_index(cols, [&](const std::size_t col) {
         std::vector<double> returns(rows, 0.0);
         for (std::size_t row = 1; row < rows; ++row) {
             returns[row] = simple_return(
@@ -91,7 +103,7 @@ std::vector<double> PolicyEngine::rolling_volatility(
             }
             volatility[offset(row, col, cols)] = std::sqrt(variance / static_cast<double>(window));
         }
-    }
+    });
     return volatility;
 }
 
@@ -103,9 +115,8 @@ std::vector<std::int64_t> PolicyEngine::cross_sectional_rank(
 ) const {
     validate_dimensions(values, rows, cols);
     std::vector<std::int64_t> ranks(rows * cols, 0);
-    std::vector<std::pair<double, std::size_t>> row_values(cols);
-
-    for (std::size_t row = 0; row < rows; ++row) {
+    for_each_index(rows, [&](const std::size_t row) {
+        std::vector<std::pair<double, std::size_t>> row_values(cols);
         for (std::size_t col = 0; col < cols; ++col) {
             row_values[col] = {values[offset(row, col, cols)], col};
         }
@@ -115,7 +126,7 @@ std::vector<std::int64_t> PolicyEngine::cross_sectional_rank(
         for (std::size_t rank = 0; rank < cols; ++rank) {
             ranks[offset(row, row_values[rank].second, cols)] = static_cast<std::int64_t>(rank + 1);
         }
-    }
+    });
     return ranks;
 }
 
@@ -166,13 +177,13 @@ std::vector<std::int64_t> PolicyEngine::momentum_targets(
     }
 
     std::vector<std::int64_t> targets(rows * cols, 0);
-    for (std::size_t col = 0; col < cols; ++col) {
+    for_each_index(cols, [&](const std::size_t col) {
         for (std::size_t row = lookback; row < rows; ++row) {
             const auto current = close[offset(row, col, cols)];
             const auto previous = close[offset(row - lookback, col, cols)];
             targets[offset(row, col, cols)] = signed_target(current - previous, max_position);
         }
-    }
+    });
     return targets;
 }
 
@@ -215,14 +226,14 @@ std::vector<std::int64_t> PolicyEngine::cross_sectional_momentum_targets(
     }
 
     std::vector<double> scores(rows * cols, 0.0);
-    for (std::size_t col = 0; col < cols; ++col) {
+    for_each_index(cols, [&](const std::size_t col) {
         for (std::size_t row = lookback; row < rows; ++row) {
             scores[offset(row, col, cols)] = simple_return(
                 close[offset(row - lookback, col, cols)],
                 close[offset(row, col, cols)]
             );
         }
-    }
+    });
 
     const auto desc_rank = cross_sectional_rank(scores, rows, cols, true);
     const auto asc_rank = cross_sectional_rank(scores, rows, cols, false);
@@ -250,13 +261,13 @@ std::vector<std::int64_t> PolicyEngine::mean_reversion_targets(
     }
 
     std::vector<std::int64_t> targets(rows * cols, 0);
-    for (std::size_t col = 0; col < cols; ++col) {
+    for_each_index(cols, [&](const std::size_t col) {
         for (std::size_t row = lookback; row < rows; ++row) {
             const auto current = close[offset(row, col, cols)];
             const auto previous = close[offset(row - lookback, col, cols)];
             targets[offset(row, col, cols)] = signed_target(previous - current, max_position);
         }
-    }
+    });
     return targets;
 }
 
@@ -274,7 +285,7 @@ std::vector<std::int64_t> PolicyEngine::moving_average_crossover_targets(
     }
 
     std::vector<std::int64_t> targets(rows * cols, 0);
-    for (std::size_t col = 0; col < cols; ++col) {
+    for_each_index(cols, [&](const std::size_t col) {
         double fast_sum = 0.0;
         double slow_sum = 0.0;
         for (std::size_t row = 0; row < rows; ++row) {
@@ -296,7 +307,7 @@ std::vector<std::int64_t> PolicyEngine::moving_average_crossover_targets(
             const auto slow_avg = slow_sum / static_cast<double>(slow_window);
             targets[offset(row, col, cols)] = signed_target(fast_avg - slow_avg, max_position);
         }
-    }
+    });
     return targets;
 }
 
