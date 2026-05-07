@@ -36,7 +36,9 @@ from .ledger import (
 )
 from .loaders import load_corporate_actions_csv, load_ticks_parquet, load_yahoo_adjusted
 from .montecarlo import MonteCarlo, MonteCarloResult
+from .paper import AlpacaFeedAdapter, BinanceFeedAdapter, PaperBroker, PaperTick, YFinanceFeedAdapter
 from .profiling import LatencyLogBook, LatencySample, LatencySummary
+from .reconcile import Reconciler, ReconciliationRecord
 from .reporting import PerformanceReport, export_performance_report_json, export_performance_report_markdown, summarize_backtest
 from .strategy import (
     MarketEvent,
@@ -112,6 +114,13 @@ __all__ = [
     "WFOResult",
     "MonteCarlo",
     "MonteCarloResult",
+    "PaperBroker",
+    "PaperTick",
+    "AlpacaFeedAdapter",
+    "YFinanceFeedAdapter",
+    "BinanceFeedAdapter",
+    "Reconciler",
+    "ReconciliationRecord",
     "calibrate_cost_model",
     "calibrate_cost_model_from_csv",
     "generate_target_matrices",
