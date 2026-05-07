@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "NANOBACK_PGO_MODE": "OFF"
+      }
+    },
+    {
+      "name": "pgo-generate",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/pgo-generate",
+      "cacheVariables": {
+        "NANOBACK_PGO_MODE": "GENERATE"
+      }
+    },
+    {
+      "name": "pgo-use",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/pgo-use",
+      "cacheVariables": {
+        "NANOBACK_PGO_MODE": "USE"
+      }
+    }
+  ]
+}
