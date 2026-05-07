@@ -1,9 +1,9 @@
 # BACKTESTER (`nanoback`)
 
 `BACKTESTER` is a C++20 event-driven multi-asset backtesting engine with Python bindings, packaged as `nanoback`.
-It focuses on realistic execution simulation, data correctness, and statistically valid research workflows.
+It focuses on realistic execution simulation, data correctness, statistical validity, and backtest-to-paper continuity.
 
-## Highlights (v0.5.x)
+## Highlights (v0.6.0)
 
 - Fast C++ core with Python APIs
 - Bar-mode and tick-mode simulation paths
@@ -19,7 +19,14 @@ It focuses on realistic execution simulation, data correctness, and statisticall
   - parameter sweeps and heatmaps
   - walk-forward optimization
   - Monte Carlo shuffle/block-bootstrap stress tests
-- Deterministic audit ledger and snapshot/resume support
+- Live bridge (new in v0.6):
+  - `PaperBroker` streams ticks and runs the same engine/risk/ledger path in realtime
+  - feed adapter protocol for Alpaca/yfinance/Binance integrations
+  - reconciliation hooks that can run after fill events
+- Position reconciliation (new in v0.6):
+  - `Reconciler` diffs engine vs broker positions
+  - optional auto-reconcile corrective orders
+  - JSONL reconciliation log for auditability
 
 ## Repository Layout
 
@@ -58,50 +65,41 @@ result = nb.run_backtest(
 print(result.summary())
 ```
 
-### Tick Replay
+### Paper Trading Bridge
 
 ```python
+from datetime import datetime, timedelta, timezone
 import nanoback as nb
+from nanoback.paper import PaperBroker, PaperTick
 
-config = nb.BacktestConfig()
-config.data_mode = nb.DataMode.TICK
+class DemoFeed:
+    def __init__(self, ticks):
+        self._ticks = list(ticks)
+    def next_tick(self, timeout_seconds=None):
+        return self._ticks.pop(0) if self._ticks else None
+    def fetch_positions(self):
+        return {"AAA": 0.0}
+    def submit_order(self, symbol, quantity_delta):
+        pass
 
-result = nb.run_backtest_ticks(
-    timestamp_ns=timestamp_ns,
-    asset=asset_idx,
-    price=price,
-    size=size,
-    side=side,  # TickSide.BID / ASK / TRADE
-    target_positions=targets,
-    cols=n_assets,
-    config=config,
-    symbols=symbols,
+def strategy(tick, state):
+    return {"AAA": 1}
+
+broker = PaperBroker(
+    symbols=["AAA"],
+    strategy=strategy,
+    feed=DemoFeed([PaperTick(timestamp_ns=1, symbol="AAA", price=100.0)]),
 )
+broker.run_until(datetime.now(timezone.utc) + timedelta(seconds=1))
 ```
 
-### Corporate Actions
+### Position Reconciliation
 
 ```python
-import nanoback as nb
+from nanoback.reconcile import Reconciler
 
-config = nb.BacktestConfig()
-config.corporate_actions = nb.load_corporate_actions_csv("corp_actions.csv", symbol_to_asset)
-```
-
-### Statistical Validation
-
-```python
-import nanoback as nb
-
-sweep = nb.Sweep(data)
-grid = nb.ParamGrid({"lookback": [5, 10, 20], "max_position": [1, 2]})
-res = sweep.run(strategy, grid, n_jobs=1, compiled=True)
-
-wfo = nb.WalkForward(n_splits=6, train_frac=0.7, anchored=True)
-wfo_res = wfo.run(data, strategy, grid, compiled=True)
-
-mc = nb.MonteCarlo.from_backtest(result)
-mc_res = mc.run(n_sims=5000, method="block_bootstrap", block_size=20)
+reconciler = Reconciler(adapter=broker.feed, log_path="outputs/reconcile.jsonl", auto_reconcile=False)
+records = reconciler.reconcile(broker.positions)
 ```
 
 ## Data Loaders
@@ -124,18 +122,3 @@ Stress benchmark (large shapes):
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --profile xlarge
 ```
-
-Useful benchmark flags:
-
-- `--baseline` / `--update-baseline`
-- `--regression-factor`
-- `--stage-regression-factor`
-- `--pnl-tolerance`
-- `--fill-count-tolerance`
-- `--memory-guard-gb`
-- `--record-history --history-file ...`
-
-## Notes
-
-- This is a research and simulation platform, not a production OMS/EMS.
-- Performance and determinism are prioritized, but you should still validate strategy-specific assumptions before live deployment.
