@@ -34,12 +34,17 @@ jobs:
           CMAKE_ARGS: -DNANOBACK_PGO_MODE=GENERATE
 
       - name: Collect profile data
-        run: python benchmarks/benchmark_engine.py --max-seconds 1.0 --min-fills 1000 --ci-mode
+        continue-on-error: true
+        run: python benchmarks/benchmark_engine.py --max-seconds 5.0 --min-fills 1
 
-      - name: Build distribution (PGO use)
-        run: python -m build --sdist --wheel --outdir dist
-        env:
-          CMAKE_ARGS: -DNANOBACK_PGO_MODE=USE
+      - name: Build distribution (PGO use with fallback)
+        run: |
+          export CMAKE_ARGS="-DNANOBACK_PGO_MODE=USE"
+          python -m build --sdist --wheel --outdir dist || {
+            echo "PGO build failed, falling back to standard release build"
+            unset CMAKE_ARGS
+            python -m build --sdist --wheel --outdir dist
+          }
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
