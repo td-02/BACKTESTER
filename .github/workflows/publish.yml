@@ -37,13 +37,13 @@ jobs:
         continue-on-error: true
         run: python benchmarks/benchmark_engine.py --max-seconds 5.0 --min-fills 1
 
-      - name: Build distribution (PGO use with fallback)
+      - name: Build source distribution (PGO use with fallback)
         run: |
           export CMAKE_ARGS="-DNANOBACK_PGO_MODE=USE"
-          python -m build --sdist --wheel --outdir dist || {
+          python -m build --sdist --outdir dist || {
             echo "PGO build failed, falling back to standard release build"
             unset CMAKE_ARGS
-            python -m build --sdist --wheel --outdir dist
+            python -m build --sdist --outdir dist
           }
 
       - name: Publish to PyPI
