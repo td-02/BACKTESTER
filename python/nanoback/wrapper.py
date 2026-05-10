@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import json
+import subprocess
+import tempfile
 from typing import Sequence
 
 import numpy as np
@@ -89,6 +93,132 @@ class PythonBacktestResult:
             df["pnl"] = np.asarray([], dtype=np.float64)
             df["drawdown"] = np.asarray([], dtype=np.float64)
         return df
+
+    def plot(self, benchmark: np.ndarray | None = None):
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise RuntimeError("plotly is required for plot(); install plotly") from exc
+
+        summary = self.summary()
+        x = self.timestamps
+        equity = self.equity_curve
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,
+            row_heights=[0.7, 0.3],
+            subplot_titles=("Equity Curve", "Drawdown"),
+        )
+        fig.add_trace(
+            go.Scatter(x=x, y=equity, mode="lines", name="Equity", line={"width": 2}),
+            row=1,
+            col=1,
+        )
+        if benchmark is not None:
+            bench = np.asarray(benchmark, dtype=np.float64).reshape(-1)
+            if bench.shape[0] != equity.shape[0]:
+                raise ValueError("benchmark length must match equity curve length")
+            fig.add_trace(
+                go.Scatter(x=x, y=bench, mode="lines", name="Benchmark", line={"dash": "dot"}),
+                row=1,
+                col=1,
+            )
+        fig.add_trace(
+            go.Scatter(x=x, y=-summary.drawdown_series, mode="lines", name="Underwater", fill="tozeroy"),
+            row=2,
+            col=1,
+        )
+        fig.update_layout(height=700, template="plotly_white", title="nanoback Backtest Result")
+        fig.update_yaxes(title_text="Equity", row=1, col=1)
+        fig.update_yaxes(title_text="Drawdown", tickformat=".1%", row=2, col=1)
+        fig.update_xaxes(title_text="Timestamp", row=2, col=1)
+        return fig
+
+    def to_html(self, path: str | Path, benchmark: np.ndarray | None = None) -> Path:
+        try:
+            import pandas as pd
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("pandas is required for to_html(); install nanoback[io]") from exc
+        output = Path(path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.summary()
+        fig = self.plot(benchmark=benchmark)
+        metrics_table = pd.DataFrame(
+            [
+                ("Sharpe", summary.sharpe),
+                ("Sortino", summary.sortino),
+                ("CAGR", summary.cagr),
+                ("Max Drawdown", summary.max_drawdown),
+                ("Calmar", summary.calmar),
+                ("Turnover/Yr", summary.turnover_per_year),
+                ("Fill Count", summary.fill_count),
+                ("PnL", summary.pnl),
+            ],
+            columns=["Metric", "Value"],
+        ).to_html(index=False, float_format=lambda x: f"{x:.6f}")
+        fig_html = fig.to_html(include_plotlyjs="inline", full_html=False)
+        output.write_text(
+            "<html><head><meta charset='utf-8'><title>nanoback report</title></head><body>"
+            "<h1>nanoback Backtest Report</h1>"
+            "<h2>Summary Metrics</h2>"
+            f"{metrics_table}"
+            "<h2>Charts</h2>"
+            f"{fig_html}"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        return output
+
+    def dashboard(self, host: str = "127.0.0.1", port: int = 8501) -> None:
+        try:
+            import streamlit  # noqa: F401
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("streamlit is required for dashboard(); install streamlit") from exc
+
+        summary = self.summary().to_dict()
+        payload = {
+            "timestamps": self.timestamps.tolist(),
+            "equity": self.equity_curve.tolist(),
+            "drawdown": summary["drawdown_series"],
+            "fills": self.to_dict()["fills"],
+            "metrics": {k: v for k, v in summary.items() if k != "drawdown_series"},
+        }
+        script = (
+            "import json\n"
+            "import pandas as pd\n"
+            "import streamlit as st\n"
+            "import plotly.graph_objects as go\n"
+            "from plotly.subplots import make_subplots\n"
+            f"payload = json.loads({json.dumps(json.dumps(payload))})\n"
+            "st.set_page_config(layout='wide')\n"
+            "st.title('nanoback dashboard')\n"
+            "mcols = st.columns(4)\n"
+            "items = list(payload['metrics'].items())\n"
+            "for i,(k,v) in enumerate(items[:8]):\n"
+            "    mcols[i%4].metric(k, f'{v:.6f}' if isinstance(v,(int,float)) else str(v))\n"
+            "fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08)\n"
+            "fig.add_trace(go.Scatter(x=payload['timestamps'], y=payload['equity'], mode='lines', name='Equity'), row=1, col=1)\n"
+            "fig.add_trace(go.Scatter(x=payload['timestamps'], y=[-d for d in payload['drawdown']], mode='lines', fill='tozeroy', name='Underwater'), row=2, col=1)\n"
+            "fig.update_layout(height=700, template='plotly_white')\n"
+            "st.plotly_chart(fig, use_container_width=True)\n"
+            "fills = pd.DataFrame(payload['fills'])\n"
+            "if not fills.empty:\n"
+            "    symbols = sorted(fills['asset'].astype(str).unique().tolist())\n"
+            "    selected = st.multiselect('Assets', symbols, default=symbols)\n"
+            "    st.dataframe(fills[fills['asset'].astype(str).isin(selected)], use_container_width=True)\n"
+            "else:\n"
+            "    st.info('No fills available')\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as handle:
+            handle.write(script)
+            script_path = handle.name
+        subprocess.run(
+            ["streamlit", "run", script_path, "--server.headless=true", f"--server.address={host}", f"--server.port={port}"],
+            check=False,
+        )
 
     def __repr__(self) -> str:
         metrics = self.summary()

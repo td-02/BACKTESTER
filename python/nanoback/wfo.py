@@ -60,6 +60,39 @@ class WFOResult:
             "mean_oos_sharpe": finite_mean([fold.oos_sharpe for fold in self.folds]) if self.folds else 0.0,
         }
 
+    def plot(self):
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("plotly is required for WFOResult.plot(); install plotly") from exc
+
+        folds = [fold.fold for fold in self.folds]
+        is_sharpes = [fold.is_sharpe for fold in self.folds]
+        oos_sharpes = [fold.oos_sharpe for fold in self.folds]
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=False,
+            vertical_spacing=0.12,
+            subplot_titles=("IS vs OOS Sharpe by Fold", "Combined OOS Equity"),
+        )
+        fig.add_trace(go.Bar(x=folds, y=is_sharpes, name="IS Sharpe"), row=1, col=1)
+        fig.add_trace(go.Bar(x=folds, y=oos_sharpes, name="OOS Sharpe"), row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(self.oos_equity_curve.size)),
+                y=self.oos_equity_curve,
+                mode="lines",
+                name="OOS Equity",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.update_layout(template="plotly_white", barmode="group", height=700, title="Walk-Forward Analysis")
+        return fig
+
 
 class WalkForward:
     def __init__(self, *, n_splits: int, train_frac: float = 0.7, anchored: bool = False):

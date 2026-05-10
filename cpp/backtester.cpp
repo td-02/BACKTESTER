@@ -426,6 +426,12 @@ BacktestResult Backtester::run(
     if (start_row > bounded_end_row) {
         throw std::invalid_argument("start_row must be <= end_row");
     }
+    for (std::size_t idx = 0; idx < matrix_size; ++idx) {
+        if (!std::isfinite(close[idx]) || !std::isfinite(high[idx]) || !std::isfinite(low[idx]) ||
+            !std::isfinite(volume[idx]) || !std::isfinite(bid[idx]) || !std::isfinite(ask[idx])) {
+            throw std::invalid_argument("market data contains non-finite values");
+        }
+    }
 
     BacktestResult result{};
     result.equity_curve.resize(rows);
@@ -644,6 +650,37 @@ BacktestResult Backtester::run(
         }
 
         if (tradable && !state.halted_by_risk) {
+            std::vector<std::int64_t> row_targets(cols, 0);
+            for (std::size_t col = 0; col < cols; ++col) {
+                const auto idx = offset(row, col, cols);
+                row_targets[col] = clamp_target(
+                    target_positions[idx],
+                    config,
+                    asset_max_positions.empty() ? config.max_position : asset_max_positions[col]
+                );
+            }
+            double projected_gross = 0.0;
+            for (std::size_t col = 0; col < cols; ++col) {
+                projected_gross += std::abs(static_cast<double>(row_targets[col] * config.lot_size) * close[offset(row, col, cols)]);
+            }
+            const auto projected_leverage = projected_gross / std::max(1.0, state.cash);
+            if (projected_leverage > config.max_gross_leverage) {
+                for (std::size_t col = 0; col < cols; ++col) {
+                    ++state.rejected_orders;
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = timestamps[row],
+                        .order_id = 0,
+                        .parent_order_id = 0,
+                        .asset = static_cast<std::int64_t>(col),
+                        .type = AuditEventType::order_rejected_leverage,
+                        .value = projected_leverage,
+                    });
+                    append_ledger(
+                        timestamps[row], 0, 0, static_cast<std::int64_t>(col), AuditEventType::order_rejected_leverage,
+                        row_targets[col] - state.positions[col], row_targets[col] - state.positions[col], 0.0, state.cash, 0.0, projected_leverage
+                    );
+                }
+            } else {
             for (std::size_t col = 0; col < cols; ++col) {
                 const auto idx = offset(row, col, cols);
                 const auto requested_target = target_positions[idx];
@@ -761,6 +798,7 @@ BacktestResult Backtester::run(
                     state.cash, 0.0, static_cast<double>(clamped_target)
                 );
             }
+            }
         }
 
         if (tradable && !state.halted_by_risk) {
@@ -771,7 +809,7 @@ BacktestResult Backtester::run(
                 }
 
                 const auto idx = offset(row, col, cols);
-                const auto row_volume = volume[idx] > 0.0 ? volume[idx] : config.default_volume;
+                const auto row_volume = std::max(0.0, volume[idx]);
                 if (order.order_type == OrderType::limit &&
                     !can_fill_limit(order.remaining_quantity, high[idx], low[idx], order.limit_price)) {
                     continue;
@@ -797,13 +835,25 @@ BacktestResult Backtester::run(
                     continue;
                 }
 
-                const auto max_fill = std::max<std::int64_t>(
-                    1,
-                    static_cast<std::int64_t>(std::floor(std::min(
-                        row_volume * config.max_participation_rate,
-                        venue_capacity
-                    )))
-                );
+                const auto max_fill = static_cast<std::int64_t>(std::floor(std::min(
+                    row_volume * config.max_participation_rate,
+                    venue_capacity
+                )));
+                if (max_fill <= 0) {
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = timestamps[row],
+                        .order_id = 0,
+                        .parent_order_id = order.parent_order_id,
+                        .asset = static_cast<std::int64_t>(col),
+                        .type = AuditEventType::order_waiting_queue,
+                        .value = venue_capacity,
+                    });
+                    append_ledger(
+                        timestamps[row], 0, order.parent_order_id, static_cast<std::int64_t>(col),
+                        AuditEventType::order_waiting_queue, 0, order.remaining_quantity, 0.0, state.cash, 0.0, venue_capacity
+                    );
+                    continue;
+                }
                 const auto desired_fill_abs = std::min<std::int64_t>(std::llabs(order.remaining_quantity), max_fill);
                 const auto child_limit = config.child_order_size > 0 ? config.child_order_size : desired_fill_abs;
                 const auto child_fill_abs = std::min<std::int64_t>(desired_fill_abs, child_limit);
@@ -938,6 +988,30 @@ BacktestResult Backtester::run(
                 state.turnover += total_notional;
                 state.total_fees += total_fees;
                 ++state.filled_orders;
+                double intra_equity = state.cash;
+                for (std::size_t k = 0; k < cols; ++k) {
+                    intra_equity += static_cast<double>(state.positions[k] * config.lot_size) * close[offset(row, k, cols)];
+                }
+                state.peak_equity = std::max(state.peak_equity, intra_equity);
+                const auto intra_drawdown = state.peak_equity > 0.0 ? (state.peak_equity - intra_equity) / state.peak_equity : 0.0;
+                if (intra_drawdown > config.max_drawdown_pct && !state.halted_by_risk) {
+                    state.halted_by_risk = true;
+                    for (auto& pending_order : state.pending) {
+                        pending_order = PendingOrder{};
+                    }
+                    result.audit_events.push_back(AuditEvent{
+                        .timestamp = timestamps[row],
+                        .order_id = 0,
+                        .parent_order_id = 0,
+                        .asset = -1,
+                        .type = AuditEventType::risk_kill_switch,
+                        .value = intra_drawdown,
+                    });
+                    append_ledger(
+                        timestamps[row], 0, 0, -1, AuditEventType::risk_kill_switch, 0, 0, 0.0, state.cash, intra_equity, intra_drawdown
+                    );
+                    break;
+                }
 
                 if (order.remaining_quantity == 0 || state.positions[col] == order.target_position) {
                     order = PendingOrder{};
