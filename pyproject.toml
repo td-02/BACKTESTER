@@ -4,8 +4,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "nanoback"
-version = "0.12.2"
-description = "C++20 event-driven multi-asset backtesting engine with Python APIs for analytics, WFO/Monte Carlo validation, corporate actions, tick replay, and execution realism."
+version = "1.0.0"
+description = "C++20 event-driven multi-asset backtesting engine with paper-trading bridge, analytics dashboard, WFO/Monte Carlo validation, and execution-realistic simulation."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Tapesh Chandra Das" }]
@@ -20,6 +20,7 @@ Issues = "https://github.com/td-02/BACKTESTER/issues"
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 io = ["pandas>=2.2", "pyarrow>=15.0", "yfinance>=0.2.40"]
+viz = ["plotly>=5.24", "streamlit>=1.40"]
 
 [tool.scikit-build]
 wheel.packages = ["python/nanoback"]
