@@ -17,6 +17,22 @@
   - Benchmark regression guard on CI merges to `main`
   - Expanded edge-case regression suite
 
+## Performance Snapshot
+
+Max stress run measured in this workspace:
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 1080000 --cols 16 --max-seconds 180 --min-fills 10000 --baseline benchmarks\no_compare.json --log-book outputs\max_stress_latency_1080000.jsonl
+```
+
+- `elapsed_seconds=25.2673`
+- `data_generation=1.2495s`
+- `policy_generation=0.4433s`
+- `engine_run=23.5745s`
+- `fills=2670270`
+
+This run is the closest practical ceiling I measured here. The core engine remains the dominant cost at this size, which is the part that matters for throughput tuning.
+
 ## Install
 
 ```bash
