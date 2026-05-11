@@ -63,6 +63,49 @@ def _estimate_matrix_memory_bytes(rows: int, cols: int) -> int:
     return int(raw * 2.25)
 
 
+def _make_config(**overrides: object) -> nb.BacktestConfig:
+    config = nb.BacktestConfig()
+    config.starting_cash = 10_000_000.0
+    config.commission_bps = 0.1
+    config.slippage_bps = 0.2
+    config.max_position = 5
+    config.max_participation_rate = 0.2
+    config.latency_steps = 1
+    config.child_order_size = 2
+    config.child_slice_delay_steps = 1
+    config.use_bid_ask_execution = True
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
+def _run_variant(
+    log_book: nb.LatencyLogBook,
+    label: str,
+    data: nb.MarketData,
+    targets: np.ndarray,
+    config: nb.BacktestConfig,
+) -> nb.BacktestResult:
+    with log_book.timing(f"engine_run[{label}]"):
+        return nb.run_backtest_matrix(
+            timestamps=data.timestamps,
+            close=data.close,
+            high=data.high,
+            low=data.low,
+            volume=data.volume,
+            bid=data.bid,
+            ask=data.ask,
+            target_positions=targets,
+            order_types=np.full_like(targets, int(nb.OrderType.MARKET), dtype=np.int8),
+            limit_prices=np.full_like(targets, np.nan, dtype=np.float64),
+            tradable_mask=None,
+            asset_max_positions=data.asset_max_positions,
+            asset_notional_limits=data.asset_notional_limits,
+            config=config,
+            symbols=data.symbols,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=sorted(MODE_CONFIG.keys()), default="latency")
@@ -83,6 +126,7 @@ def main() -> None:
     parser.add_argument("--version", type=str, default=None)
     parser.add_argument("--profile", choices=sorted(PROFILE_THRESHOLDS.keys()), default="default")
     parser.add_argument("--memory-guard-gb", type=float, default=3.5)
+    parser.add_argument("--hot-path-profile", action="store_true")
     args = parser.parse_args()
 
     mode_defaults = MODE_CONFIG[args.mode]
@@ -143,18 +187,6 @@ def main() -> None:
             asset_configs=[nb.AssetConfig(symbol=f"asset_{idx}", max_position=5, notional_limit=5_000_000.0) for idx in range(cols)],
         )
 
-    config = nb.BacktestConfig(
-        starting_cash=10_000_000.0,
-        commission_bps=0.1,
-        slippage_bps=0.2,
-        max_position=5,
-        max_participation_rate=0.2,
-        latency_steps=1,
-        child_order_size=2,
-        child_slice_delay_steps=1,
-        use_bid_ask_execution=True,
-    )
-
     with log_book.timing("policy_generation", policy="moving_average_crossover"):
         targets = nb.compiled_moving_average_crossover_targets(
             data.close,
@@ -163,23 +195,43 @@ def main() -> None:
             max_position=5,
         )
 
-    with log_book.timing("engine_run"):
-        result = nb.run_backtest_matrix(
-            timestamps=data.timestamps,
-            close=data.close,
-            high=data.high,
-            low=data.low,
-            volume=data.volume,
-            bid=data.bid,
-            ask=data.ask,
-            target_positions=targets,
-            order_types=np.full_like(targets, int(nb.OrderType.MARKET), dtype=np.int8),
-            limit_prices=np.full_like(targets, np.nan, dtype=np.float64),
-            tradable_mask=None,
-            asset_max_positions=data.asset_max_positions,
-            asset_notional_limits=data.asset_notional_limits,
-            config=config,
-            symbols=data.symbols,
+    baseline_config = _make_config()
+    result = _run_variant(log_book, "baseline", data, targets, baseline_config)
+    baseline_elapsed = log_book.samples[-1].elapsed_seconds
+    if args.hot_path_profile:
+        _run_variant(
+            log_book,
+            "no_latency",
+            data,
+            targets,
+            _make_config(latency_steps=0),
+        )
+        _run_variant(
+            log_book,
+            "no_bid_ask",
+            data,
+            targets,
+            _make_config(use_bid_ask_execution=False),
+        )
+        _run_variant(
+            log_book,
+            "no_child_slice",
+            data,
+            targets,
+            _make_config(child_order_size=0, child_slice_delay_steps=0),
+        )
+        _run_variant(
+            log_book,
+            "fast_path",
+            data,
+            targets,
+            _make_config(
+                latency_steps=0,
+                use_bid_ask_execution=False,
+                child_order_size=0,
+                child_slice_delay_steps=0,
+                max_participation_rate=1.0,
+            ),
         )
 
     log_book.metadata.update({"fills": int(len(result.fills)), "pnl": float(result.pnl)})
@@ -188,6 +240,11 @@ def main() -> None:
     print(f"elapsed_seconds={elapsed:.4f}")
     print(f"rows={rows} cols={cols}")
     print(f"fills={len(result.fills)} pnl={result.pnl:.2f}")
+    if args.hot_path_profile:
+        for label in ("no_latency", "no_bid_ask", "no_child_slice", "fast_path"):
+            sample_elapsed = next(sample.elapsed_seconds for sample in log_book.samples if sample.stage == f"engine_run[{label}]")
+            speedup = baseline_elapsed / sample_elapsed if sample_elapsed > 0 else float("inf")
+            print(f"{label}_engine_seconds={sample_elapsed:.4f} speedup_vs_baseline={speedup:.2f}x")
     print(log_book.render_text())
     log_book.write_jsonl(log_book_path)
     current_metrics = {
@@ -206,7 +263,7 @@ def main() -> None:
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(json.dumps(current_metrics, indent=2), encoding="utf-8")
         print(f"updated_baseline={baseline_path}")
-    elif baseline_path.exists():
+    elif baseline_path.exists() and not args.hot_path_profile:
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         baseline_rows = int(baseline.get("rows", rows))
         baseline_cols = int(baseline.get("cols", cols))

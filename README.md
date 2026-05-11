@@ -33,6 +33,29 @@ Max stress run measured in this workspace:
 
 This run is the closest practical ceiling I measured here. The core engine remains the dominant cost at this size, which is the part that matters for throughput tuning.
 
+## Hot Path Profile
+
+The same `200000 x 16` stress shape was rerun with targeted engine variants to isolate the most expensive execution features:
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 200000 --cols 16 --hot-path-profile --max-seconds 120 --min-fills 5000 --baseline benchmarks\no_compare.json --log-book outputs\hot_path_profile.jsonl
+```
+
+- `elapsed_seconds=3.0829`
+- `data_generation=0.2816s`
+- `policy_generation=0.0782s`
+- `engine_run[baseline]=0.5596s`
+- `engine_run[no_latency]=0.5653s` `speedup_vs_baseline=0.99x`
+- `engine_run[no_bid_ask]=0.5845s` `speedup_vs_baseline=0.96x`
+- `engine_run[no_child_slice]=0.4668s` `speedup_vs_baseline=1.20x`
+- `engine_run[fast_path]=0.5470s` `speedup_vs_baseline=1.02x`
+- `fills=493502`
+
+Interpretation:
+- The child-slicing path is the clearest optimization target in this run.
+- Latency-step logic and bid/ask execution are not the dominant cost at this workload.
+- The engine is still the bottleneck, but the profile now points to a narrower hot path instead of a broad slowdown.
+
 ## Install
 
 ```bash
