@@ -39,7 +39,7 @@ jobs:
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_ARCHS_WINDOWS: "AMD64"
           CIBW_TEST_SKIP: "*"
-          CIBW_ENVIRONMENT: "CMAKE_ARGS='-DNANOBACK_PGO_MODE=OFF'"
+          CIBW_ENVIRONMENT: "CMAKE_ARGS='-DNANOBACK_PGO_MODE=OFF -DNANOBACK_ENABLE_NATIVE_OPTIMIZATIONS=OFF'"
 
       - name: Build sdist
         run: python -m pip install --upgrade build && python -m build --sdist --outdir dist
