@@ -22,7 +22,7 @@
 Max stress run measured in this workspace:
 
 ```powershell
-.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 1080000 --cols 16 --max-seconds 180 --min-fills 10000 --baseline benchmarks\no_compare.json --log-book outputs\max_stress_latency_1080000.jsonl
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 1080000 --cols 16 --max-seconds 180 --min-fills 10000 --baseline benchmarks\benchmark_engine_stress_baseline.json --log-book outputs\max_stress_latency_1080000.jsonl
 ```
 
 - `elapsed_seconds=25.2673`
@@ -38,7 +38,7 @@ This run is the closest practical ceiling I measured here. The core engine remai
 The same `200000 x 16` stress shape was rerun with targeted engine variants to isolate the most expensive execution features:
 
 ```powershell
-.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 200000 --cols 16 --hot-path-profile --max-seconds 120 --min-fills 5000 --baseline benchmarks\no_compare.json --log-book outputs\hot_path_profile.jsonl
+.\.venv\Scripts\python.exe benchmarks\benchmark_engine.py --mode stress --rows 200000 --cols 16 --hot-path-profile --max-seconds 120 --min-fills 5000 --log-book outputs\hot_path_profile.jsonl
 ```
 
 - `elapsed_seconds=3.0829`

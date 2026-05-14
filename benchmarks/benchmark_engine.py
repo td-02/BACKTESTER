@@ -247,6 +247,7 @@ def main() -> None:
             print(f"{label}_engine_seconds={sample_elapsed:.4f} speedup_vs_baseline={speedup:.2f}x")
     print(log_book.render_text())
     log_book.write_jsonl(log_book_path)
+    primary_elapsed = baseline_elapsed if args.hot_path_profile else elapsed
     current_metrics = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "version": resolved_version,
@@ -254,7 +255,7 @@ def main() -> None:
         "profile": args.profile,
         "rows": rows,
         "cols": cols,
-        "elapsed_seconds": elapsed,
+        "elapsed_seconds": primary_elapsed,
         "fills": int(len(result.fills)),
         "pnl": float(result.pnl),
         "stages": {stage: summary.total for stage, summary in log_book.stage_summaries().items()},
@@ -306,8 +307,8 @@ def main() -> None:
                 )
         print(f"baseline_check=passed path={baseline_path}")
 
-    if elapsed > max_seconds:
-        raise SystemExit(f"benchmark exceeded threshold: {elapsed:.4f}s > {max_seconds:.4f}s")
+    if primary_elapsed > max_seconds:
+        raise SystemExit(f"benchmark exceeded threshold: {primary_elapsed:.4f}s > {max_seconds:.4f}s")
     if len(result.fills) < min_fills:
         raise SystemExit(f"benchmark produced too few fills: {len(result.fills)} < {min_fills}")
     if args.record_history:
